@@ -82,6 +82,14 @@ def get_latest_stored_datetime(fs, city: str):
 
     df["datetime"] = pd.to_datetime(df["datetime"])
     latest = df["datetime"].max()
+    # Hopsworks/Hudi returns this column as tz-aware (UTC-labeled) on read,
+    # even though everything aqiPipeline.py writes/compares is tz-naive
+    # (Open-Meteo's "timezone": "auto" gives naive local timestamps). The
+    # underlying values aren't shifted -- this is a labeling mismatch, not
+    # a real offset -- but pandas refuses to compare naive vs. aware
+    # datetimes at all, so normalize to naive here, once, at the source.
+    if latest.tzinfo is not None:
+        latest = latest.tz_localize(None)
     print(f"  Latest stored row: {latest}")
     return latest
 
@@ -153,7 +161,43 @@ def engineer_features(df: pd.DataFrame, upwind_cols: list, skip_upwind: bool) ->
 def select_new_rows(engineered_df: pd.DataFrame, latest_stored_dt) -> pd.DataFrame:
     if latest_stored_dt is None:
         return engineered_df
-    return engineered_df[engineered_df["datetime"] > latest_stored_dt].reset_index(drop=True)
+    # Defensive: normalize both sides to naive regardless of what arrives
+    # here, so this never breaks again on a tz-labeling mismatch.
+    if getattr(latest_stored_dt, "tzinfo", None) is not None:
+        latest_stored_dt = latest_stored_dt.tz_localize(None)
+    dt_col = engineered_df["datetime"]
+    if hasattr(dt_col.dt, "tz") and dt_col.dt.tz is not None:
+        dt_col = dt_col.dt.tz_localize(None)
+    return engineered_df[dt_col > latest_stored_dt].reset_index(drop=True)
+
+
+def align_dtypes_to_feature_group(df: pd.DataFrame, fg) -> pd.DataFrame:
+    """Casts numeric columns to match the Feature Group's EXISTING schema
+    exactly, read live from Hopsworks rather than assumed.
+
+    Why this is needed: pandas'/numpy's default integer dtype is
+    platform-dependent -- int64 on Linux/Mac, int32 on Windows. The
+    feature group's schema was locked in by whichever platform ran the
+    very first insert (via aqiPipeline.py). Any later insert -- like this
+    hourly one -- run from a DIFFERENT platform can produce a different
+    default int width for the exact same column, which Hopsworks rejects
+    as a schema mismatch even though the actual data is fine. Reading the
+    schema back and casting to match it sidesteps this regardless of which
+    OS either script happens to run on."""
+    type_map = {
+        "bigint": "int64", "int": "int32", "smallint": "int16", "tinyint": "int8",
+        "float": "float32", "double": "float64",
+    }
+    schema = {f.name: f.type for f in fg.features}
+    df = df.copy()
+    for col in df.columns:
+        target_dtype = type_map.get(schema.get(col))
+        if target_dtype:
+            try:
+                df[col] = df[col].astype(target_dtype)
+            except (ValueError, TypeError) as e:
+                print(f"  Could not cast '{col}' to {target_dtype} (Hopsworks type: {schema.get(col)}): {e}")
+    return df
 
 
 def insert_new_rows(fg, new_rows: pd.DataFrame):
@@ -162,8 +206,17 @@ def insert_new_rows(fg, new_rows: pd.DataFrame):
         return
     df = new_rows.copy()
     df.columns = [c.lower().replace(" ", "_") for c in df.columns]
-    if "day" in df.columns:
-        df["day"] = df["day"].astype("int32")
+
+    try:
+        df = align_dtypes_to_feature_group(df, fg)
+    except Exception as e:
+        # Defensive fallback if schema introspection itself fails for some
+        # reason -- at minimum keep the one cast aqiPipeline.py's own
+        # upload path relies on.
+        print(f"  Schema introspection failed ({e}), falling back to a manual cast for 'day' only")
+        if "day" in df.columns:
+            df["day"] = df["day"].astype("int32")
+
     print(f"Inserting {len(df):,} new row(s) -- {df['datetime'].min()} -> {df['datetime'].max()}")
     fg.insert(df)
 

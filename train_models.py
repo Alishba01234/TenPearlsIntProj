@@ -455,57 +455,6 @@ def register_model(project, result: dict, city: str, X_train: pd.DataFrame):
     print(f"Registered '{model_name}' in Model Registry "
           f"(algorithm: {result['best_model_name']}, test RMSE: {result['test_metrics']['rmse']:.2f})")
 
-
-def register_all_candidates(project, result: dict, city: str, X_train: pd.DataFrame):
-    """Registers EVERY trained candidate for this horizon (ridge,
-    random_forest, xgboost, neural_network -- statistical through deep
-    learning) under its own Model Registry name:
-        aqi_{city}_{horizon}h_{algorithm}
-    e.g. aqi_karachi_24h_ridge, aqi_karachi_24h_xgboost, aqi_karachi_24h_neural_network.
-
-    This is IN ADDITION TO register_model(), which still registers the CV
-    winner under the original aqi_{city}_{horizon}h name -- nothing that
-    already depends on that name (e.g. the dashboard's model_service.py)
-    needs to change. This function just makes the other candidates
-    available too, so a dashboard can offer a real side-by-side comparison
-    across algorithm families instead of only ever seeing the winner."""
-    from hsml.schema import Schema
-    from hsml.model_schema import ModelSchema
-
-    horizon = result["horizon"]
-    mr = project.get_model_registry()
-    X_sample = X_train[result["feature_columns"]].iloc[:1]
-    input_schema = Schema(X_train[result["feature_columns"]])
-    output_schema = Schema(pd.DataFrame({f"target_{TARGET_COL}_{horizon}h_ahead": [0.0]}))
-    model_schema = ModelSchema(input_schema=input_schema, output_schema=output_schema)
-
-    for algo_name, candidate in result["all_candidates"].items():
-        model_name = f"aqi_{city}_{horizon}h_{algo_name}"
-        model_dir = f"model_{model_name}"
-        os.makedirs(model_dir, exist_ok=True)
-
-        if isinstance(candidate["model"], KerasWrapper):
-            candidate["model"].keras_model.save(os.path.join(model_dir, "keras_model.keras"))
-        else:
-            joblib.dump(candidate["model"], os.path.join(model_dir, "model.pkl"))
-        # Same scaler for every candidate at this horizon -- they were all
-        # trained on the identical scaled X_train_h.
-        joblib.dump(result["scaler"], os.path.join(model_dir, "scaler.pkl"))
-
-        is_winner = (algo_name == result["best_model_name"])
-        hops_model = mr.python.create_model(
-            name=model_name,
-            metrics=candidate["test_metrics"],
-            model_schema=model_schema,
-            input_example=X_sample,
-            description=(f"{algo_name} candidate predicting AQI {horizon}h ahead for {city}"
-                         f"{' (CV winner, also registered as aqi_' + city + f'_{horizon}h)' if is_winner else ''}"),
-        )
-        hops_model.save(model_dir)
-        print(f"Registered '{model_name}' (test RMSE: {candidate['test_metrics']['rmse']:.2f}, "
-              f"test R2: {candidate['test_metrics']['r2']:.3f})")
-
-
 # ==================================================================
 # MAIN
 # ==================================================================
@@ -520,9 +469,6 @@ def main():
                               "and falls back to 1 if that file doesn't exist.")
     parser.add_argument("--skip-registry", action="store_true",
                          help="Train and evaluate only, skip registering models in Hopsworks")
-    parser.add_argument("--skip-candidate-registry", action="store_true",
-                         help="Only register the per-horizon CV winner (old behavior) -- "
-                              "skip also registering the other statistical/deep-learning candidates")
     args = parser.parse_args()
 
     td_version = args.td_version
@@ -565,8 +511,6 @@ def main():
 
     for result in results:
         register_model(project, result, args.city, X_train)
-        if not args.skip_candidate_registry:
-            register_all_candidates(project, result, args.city, X_train)
 
 
 if __name__ == "__main__":
