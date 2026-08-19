@@ -33,6 +33,7 @@ from aqiPipeline import (  # noqa: F401 -- read-only reuse
     get_hopsworks_feature_store, prepare_for_split, compute_split_boundaries,
     create_feature_view_split, TARGET_COLS,
 )
+from hopsworks_read_utils import robust_read
 
 VERSION_FILE = "latest_td_version.txt"
 
@@ -83,7 +84,7 @@ def main():
     fg = fs.get_feature_group(f"aqi_features_{city_key}", version=args.fg_version)
 
     print("Reading current feature group state...")
-    df = fg.read()
+    df = robust_read(fg, label="refresh_training_split", retries=4, base_delay_seconds=30)
     print(f"  {len(df):,} rows currently in the feature group")
 
     df_for_split = prepare_for_split(df)
