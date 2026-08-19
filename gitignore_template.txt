@@ -1,0 +1,20 @@
+# Environment / secrets -- NEVER commit these
+.env
+myenv/
+*.pyc
+__pycache__/
+
+# Local model artifact folders written by train_models.py / model_service.py
+# -- the real copies live in the Hopsworks Model Registry, these are just
+# local staging dirs recreated on every run
+model_aqi_*/
+registry_cache/
+
+# Large local split files -- regenerated from Hopsworks each run;
+# comment these out if you'd rather track them in git for visibility
+train.csv
+test.csv
+
+# OS / editor cruft
+.DS_Store
+.vscode/settings.json
