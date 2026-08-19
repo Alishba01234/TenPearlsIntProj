@@ -32,10 +32,12 @@ Usage:
 """
 import argparse
 import os
+import time
 from datetime import datetime, timedelta
 
 import pandas as pd
 
+from hopsworks_read_utils import robust_read
 from aqiPipeline import (  # noqa: F401  -- read-only reuse, see module docstring
     geocode_city, fetch_weather, fetch_air_quality, fetch_upwind_air_quality,
     clean_dataset, add_time_features, add_aqi_features, add_aqi_acceleration_feature,
@@ -71,10 +73,13 @@ def get_latest_stored_datetime(fs, city: str):
     fg = get_feature_group(fs, city)
     cutoff = pd.Timestamp.utcnow().tz_localize(None) - timedelta(days=LOOKBACK_BUFFER_DAYS + 2)
     try:
-        df = fg.filter(fg.datetime >= cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
+        df = robust_read(
+            fg.filter(fg.datetime >= cutoff.strftime("%Y-%m-%d %H:%M:%S")),
+            label="get_latest_stored_datetime (filtered)",
+        )
     except Exception as e:
-        print(f"  Filtered read failed ({e}), falling back to a full read...")
-        df = fg.read()
+        print(f"  Filtered read failed after retries ({e}), falling back to a full read...")
+        df = robust_read(fg, label="get_latest_stored_datetime (full)")
 
     if df is None or df.empty:
         print("  Feature group has no rows in the recent window -- treating as cold start.")
@@ -200,7 +205,7 @@ def align_dtypes_to_feature_group(df: pd.DataFrame, fg) -> pd.DataFrame:
     return df
 
 
-def insert_new_rows(fg, new_rows: pd.DataFrame):
+def insert_new_rows(fg, new_rows: pd.DataFrame, retries: int = 3):
     if new_rows.empty:
         print("No new rows to insert (source data hasn't advanced past the latest stored hour yet).")
         return
@@ -218,7 +223,24 @@ def insert_new_rows(fg, new_rows: pd.DataFrame):
             df["day"] = df["day"].astype("int32")
 
     print(f"Inserting {len(df):,} new row(s) -- {df['datetime'].min()} -> {df['datetime'].max()}")
-    fg.insert(df)
+
+    # Running unattended (hourly, via GitHub Actions), so a one-off network
+    # blip talking to the Hopsworks API shouldn't kill the whole run --
+    # retry with backoff, same pattern as aqiPipeline.py's fetch_chunk().
+    # Safe to retry: the "datetime" primary key means Hudi upserts rather
+    # than duplicates even if an earlier attempt actually landed server-side
+    # despite the client-side error.
+    for attempt in range(1, retries + 1):
+        try:
+            fg.insert(df)
+            return
+        except Exception as e:
+            print(f"  Insert attempt {attempt}/{retries} failed: {e}")
+            if attempt == retries:
+                raise
+            wait = 15 * attempt
+            print(f"  Retrying in {wait}s...")
+            time.sleep(wait)
 
 
 # ==================================================================
@@ -234,9 +256,12 @@ def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
     print(f"Pruning rows older than {cutoff.date()} (keeping latest {retention_years} years)...")
     try:
-        old_df = fg.filter(fg.datetime < cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
+        old_df = robust_read(
+            fg.filter(fg.datetime < cutoff.strftime("%Y-%m-%d %H:%M:%S")),
+            label="prune_old_rows",
+        )
     except Exception as e:
-        print(f"  Could not read old rows for pruning, skipping this run's prune step: {e}")
+        print(f"  Could not read old rows for pruning after retries, skipping this run's prune step: {e}")
         return
 
     if old_df is None or old_df.empty:
