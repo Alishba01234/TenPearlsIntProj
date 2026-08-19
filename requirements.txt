@@ -1,13 +1,10 @@
 pandas
 requests
-dotenv
 hopsworks
 pyarrow
 confluent-kafka
 setuptools
 wheel
-conda-forge
-twofish
 scikit-learn
 xgboost
 joblib
@@ -25,8 +22,6 @@ pydantic-settings
 hsfs
 hsml
 numpy
-scikit-learn
-xgboost
 shap
 nest_asyncio
 plotly
