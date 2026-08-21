@@ -74,56 +74,57 @@ FEATURE_GROUP_VERSION = 1
 # 1. FIND WHAT'S ALREADY STORED
 # ============================================================================
 
-def get_feature_group(
-    fs,
-    city: str,
-    version: int = FEATURE_GROUP_VERSION,
-):
-    return fs.get_feature_group(
-        f"aqi_features_{city}",
-        version=version,
-    )
-
-
-def get_latest_stored_datetime(fs, city: str):
-    """Reads only a recent slice to find the most recent stored row."""
-
-    fg = get_feature_group(fs, city)
-
-    cutoff = (
-        pd.Timestamp.utcnow().tz_localize(None)
-        - timedelta(days=LOOKBACK_BUFFER_DAYS + 2)
-    )
-
+def get_feature_group(fs, city: str, version: int = FEATURE_GROUP_VERSION):
+    """
+    Fetches the feature group from Hopsworks.
+    Tries the lowercase name format if the raw city name isn't found.
+    """
+    # Try exact name first (e.g., "aqi_features_Karachi")
+    fg_name = f"aqi_features_{city}"
     try:
-        df = fg.filter(
-            fg.datetime >= cutoff.strftime("%Y-%m-%d %H:%M:%S")
-        ).read()
+        return fs.get_feature_group(fg_name, version=version)
+    except Exception:
+        # Fallback: Try lowercased name format (e.g., "aqi_features_karachi")
+        try:
+            fallback_name = f"aqi_features_{city.lower()}"
+            print(f"  Feature group '{fg_name}' not found. Trying fallback: '{fallback_name}'")
+            return fs.get_feature_group(fallback_name, version=version)
+        except Exception as e:
+            raise ValueError(
+                f"Could not retrieve Feature Group for city '{city}'. "
+                f"Tried '{fg_name}' and '{fallback_name}'. Error: {e}"
+            )
 
+
+
+def get_latest_stored_datetime(fg, city: str):
+    """Reads only a recent slice to find the most recent stored row."""
+    if fg is None:
+        print("  Feature group reference is invalid (None) -- treating as cold start.")
+        return None
+        
+    cutoff = pd.Timestamp.utcnow().tz_localize(None) - timedelta(days=LOOKBACK_BUFFER_DAYS + 2)
+    try:
+        df = fg.filter(fg.datetime >= cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
     except Exception as e:
-        print(
-            f"  Filtered read failed ({e}), "
-            "falling back to a full read..."
-        )
-        df = fg.read()
+        print(f"  Filtered read failed ({e}), falling back to a full read...")
+        try:
+            df = fg.read()
+        except Exception as read_err:
+            print(f"  Full table read failed: {read_err}")
+            return None
 
     if df is None or df.empty:
-        print(
-            "  Feature group has no rows in the recent window "
-            "-- treating as cold start."
-        )
+        print("  Feature group has no rows in the recent window -- treating as cold start.")
         return None
 
     df["datetime"] = pd.to_datetime(df["datetime"])
-
     latest = df["datetime"].max()
-
     if latest.tzinfo is not None:
         latest = latest.tz_localize(None)
-
     print(f"  Latest stored row: {latest}")
-
     return latest
+
 
 
 # ============================================================================
@@ -473,18 +474,11 @@ def main():
     # ------------------------------------------------------------------------
     # Initialize connection to Feature Store
     # ------------------------------------------------------------------------
-
     fs = get_hopsworks_feature_store()
+    fg = get_feature_group(fs, args.city) # Will raise clear ValueError if missing
 
-    fg = get_feature_group(
-        fs,
-        args.city,
-    )
-
-    latest_stored_dt = get_latest_stored_datetime(
-        fs,
-        args.city,
-    )
+    # Pass the validated fg object down
+    latest_stored_dt = get_latest_stored_datetime(fg, args.city)
 
     # ------------------------------------------------------------------------
     # Calculate scheduling window based on history tail
