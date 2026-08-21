@@ -1,0 +1,48 @@
+name: Monthly Feature Store Prune
+
+# Runs monthly_prune.py once a month: deletes whichever calendar month(s)
+# of data have aged out of the 4-year retention window, from both the
+# Hopsworks Feature Store and the committed aqi_features.csv.
+#
+# This is split out from feature_pipeline.yml (which runs hourly and now
+# only appends) so the Hopsworks read+delete pass happens 12x/year instead
+# of 24x/day.
+
+on:
+  schedule:
+    - cron: "0 3 1 * *"   # 03:00 UTC on the 1st of every month
+  workflow_dispatch: {}    # lets you trigger it manually from the Actions tab
+
+permissions:
+  contents: write   # needed to commit the trimmed aqi_features.csv back
+
+jobs:
+  monthly-prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run monthly prune
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: python monthly_prune.py --city "Karachi"
+
+      - name: Commit trimmed aqi_features.csv (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add aqi_features.csv
+          git diff --staged --quiet || git commit -m "Monthly retention prune [skip ci]"
+          git push
