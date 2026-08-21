@@ -248,35 +248,62 @@ def insert_new_rows(fg, new_rows: pd.DataFrame, retries: int = 3):
 # ==================================================================
 
 def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
-    """Deletes rows older than the retention window from the Feature Store
-    so it stays a fixed rolling window instead of growing forever. Uses
-    HSFS's commit_delete_record() on this Hudi-backed feature group
-    (aqiPipeline.py creates it with time_travel_format="HUDI"), which needs
-    a DataFrame of the rows to remove (matched by primary key + event time)."""
+    """Trims the Feature Store's feature group down to the retention
+    window.
+
+    IMPORTANT: row-level Hudi deletes (commit_delete_record / remove_rows)
+    only work when hsfs runs with the Spark engine -- confirmed via a real
+    run here, not just docs: with the plain Python engine (a GitHub
+    Actions runner or local venv, no Spark cluster), calling them raises
+    "Deleting rows is only supported for HUDI feature groups when using
+    the Spark engine."
+
+    The Python-engine-safe equivalent is: read the full feature group,
+    filter out old rows in pandas, then insert(..., overwrite=True) -- a
+    supported, documented operation that replaces the feature group's
+    DATA (not its metadata) with what's passed in.
+
+    This reads the ENTIRE feature group to do that, which is more
+    expensive than a targeted delete would have been -- but at this
+    dataset's size (tens of thousands of rows), that's a few seconds of
+    read + write, not a real cost concern, so this runs every hourly
+    invocation and keeps the retention window exact rather than letting
+    it drift between less-frequent prunes."""
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
     print(f"Pruning rows older than {cutoff.date()} (keeping latest {retention_years} years)...")
+
+    print("  Reading the full feature group (Python engine can't filter-then-delete "
+          "server-side) ...")
     try:
-        old_df = robust_read(
-            fg.filter(fg.datetime < cutoff.strftime("%Y-%m-%d %H:%M:%S")),
-            label="prune_old_rows",
-        )
+        full_df = robust_read(fg, label="prune_old_rows (full)")
     except Exception as e:
-        print(f"  Could not read old rows for pruning after retries, skipping this run's prune step: {e}")
+        print(f"  Could not read the feature group for pruning after retries, "
+              f"skipping this run's prune step: {e}")
         return
 
-    if old_df is None or old_df.empty:
+    if full_df is None or full_df.empty:
+        print("  Feature group is empty -- nothing to prune.")
+        return
+
+    full_df["datetime"] = pd.to_datetime(full_df["datetime"])
+    if full_df["datetime"].dt.tz is not None:
+        full_df["datetime"] = full_df["datetime"].dt.tz_localize(None)
+
+    before = len(full_df)
+    trimmed_df = full_df[full_df["datetime"] >= cutoff].reset_index(drop=True)
+    removed = before - len(trimmed_df)
+
+    if removed == 0:
         print("  No rows older than the retention window -- nothing to prune.")
         return
 
-    old_df["datetime"] = pd.to_datetime(old_df["datetime"])
-    print(f"  Deleting {len(old_df):,} rows ({old_df['datetime'].min()} -> {old_df['datetime'].max()})...")
+    print(f"  Overwriting feature group with retention-trimmed data: "
+          f"{before:,} -> {len(trimmed_df):,} rows ({removed:,} removed)...")
     try:
-        fg.commit_delete_record(old_df)
-        print("  Pruned.")
+        fg.insert(trimmed_df, overwrite=True)
+        print("  Pruned (via overwrite).")
     except Exception as e:
-        print(f"  WARNING: commit_delete_record failed ({e}). If your installed hopsworks/hsfs "
-              f"version exposes a different row-delete API, this call needs updating -- "
-              f"check the Hopsworks docs for your version's Feature Group delete method.")
+        print(f"  WARNING: prune overwrite failed: {e}")
 
 
 # ==================================================================
@@ -318,17 +345,30 @@ def main():
     parser.add_argument("--lookback-days", type=int, default=LOOKBACK_BUFFER_DAYS)
     parser.add_argument("--skip-upwind", action="store_true")
     parser.add_argument("--skip-prune", action="store_true",
-                         help="Insert new rows but don't prune old ones this run")
+                         help="Insert new rows but don't prune old ones this run (default: "
+                              "prune runs every invocation, keeping the retention window exact)")
+    parser.add_argument("--prune-only", action="store_true",
+                         help="Skip the fetch/insert steps entirely and only run the retention "
+                              "prune -- useful for a manual/debug run when you just want to "
+                              "check or fix the retention window without touching new data.")
     args = parser.parse_args()
+
+    city_key = args.city.lower().replace(" ", "_")
+    fs = get_hopsworks_feature_store()
+    fg = get_feature_group(fs, city_key)
+
+    if args.prune_only:
+        if args.skip_prune:
+            print("--prune-only and --skip-prune both set -- nothing to do.")
+            return
+        prune_old_rows(fg, args.retention_years)
+        print("\nPrune-only run complete.")
+        return
 
     if args.lat is not None and args.lon is not None:
         lat, lon = args.lat, args.lon
     else:
         lat, lon = geocode_city(args.city)
-    city_key = args.city.lower().replace(" ", "_")
-
-    fs = get_hopsworks_feature_store()
-    fg = get_feature_group(fs, city_key)
 
     print("\nChecking latest stored row...")
     latest_stored_dt = get_latest_stored_datetime(fs, city_key)
