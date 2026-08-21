@@ -2,8 +2,10 @@ name: Hourly Feature Pipeline
 
 # Runs hourly_feature_update.py every hour: fetches only the newest hour(s)
 # of data, appends them to the Hopsworks Feature Store, and prunes rows
-# older than the 4-year retention window (both in Hopsworks and in the
-# committed aqi_features.csv).
+# older than the 4-year retention window every run -- the dataset here is
+# small enough (tens of thousands of rows) that a full read+overwrite each
+# hour is cheap, so the window stays exact to the hour rather than
+# drifting between prunes.
 
 on:
   schedule:
