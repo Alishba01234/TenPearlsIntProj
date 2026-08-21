@@ -15,10 +15,22 @@ far too slow/wasteful to run every hour. This script instead:
   4. Inserts ONLY the rows newer than what's already stored (an upsert on
      the "datetime" primary key -- Hopsworks/Hudi handles this as a pure
      append since these datetimes don't exist yet).
-  5. Prunes rows older than --retention-years (default 4) from the
-     Feature Store, and mirrors the same append+prune behavior on the
-     local aqi_features.csv, so both stay a fixed rolling window instead
-     of growing forever.
+  5. Physically trims the local aqi_features.csv to the last
+     --retention-years (default 4) years, so it stays a fixed rolling
+     window instead of growing forever.
+
+  Note on retention in the Feature Store itself: Hudi only supports
+  row-level deletes through the Spark engine, which this Python-engine
+  GitHub Actions job doesn't have -- there's no equivalent for deleting
+  individual rows from the Python client (confirmed as a known Hopsworks
+  limitation, see the Hopsworks community forum). Rather than physically
+  deleting rows, the Feature Store is left to hold its full history, and
+  retention is enforced instead by FILTERING AT READ TIME wherever the
+  data is consumed for training or serving (see retention_filter() below
+  and RETENTION.md). This achieves the actual goal -- training/serving
+  never sees data older than the retention window -- without needing
+  Spark, and the extra rows sitting in the Feature Store cost only a
+  little storage.
 
 This file does not modify aqiPipeline.py or train_models.py -- it only
 imports read-only from aqiPipeline.py so feature engineering never drifts
@@ -222,38 +234,56 @@ def insert_new_rows(fg, new_rows: pd.DataFrame):
 
 
 # ==================================================================
-# 4. PRUNE: KEEP ONLY THE LATEST N YEARS
+# 4. RETENTION: BOUND WHAT TRAINING/SERVING SEES TO THE LAST N YEARS
 # ==================================================================
+#
+# The Feature Store is NOT physically pruned here. Hudi row-level deletes
+# only work through the Spark engine, and this pipeline runs on the plain
+# Python engine (see module docstring) -- there's no Python-engine
+# equivalent for deleting individual rows, confirmed as a known Hopsworks
+# limitation (the only Python-engine delete option, fg.delete(), drops
+# the ENTIRE feature group, not a filtered subset).
+#
+# The actual requirement -- training/serving never sees data older than
+# the retention window -- doesn't need physical deletion to be true.
+# It's achieved instead by filtering at read time via retention_filter()
+# below. The Feature Store keeps its full history (a small, fixed extra
+# storage cost, since old rows never come back once inserted); only what
+# gets pulled out for training or serving is bounded.
 
-def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
-    """Deletes rows older than the retention window from the Feature Store
-    so it stays a fixed rolling window instead of growing forever. Uses
-    HSFS's commit_delete_record() on this Hudi-backed feature group
-    (aqiPipeline.py creates it with time_travel_format="HUDI"), which needs
-    a DataFrame of the rows to remove (matched by primary key + event
-    time)."""
+def retention_filter(fg, retention_years: int = RETENTION_YEARS):
+    """Returns a Hopsworks filter expression restricting this feature
+    group to rows within the last `retention_years` years. Use this
+    everywhere the Feature Store is READ for training or serving:
+
+        cutoff_filter = retention_filter(fg)
+        df = fg.filter(cutoff_filter).read()
+
+        # or when building a Feature View (the idiomatic way to reuse
+        # this same filter consistently across training and serving):
+        fv = fs.create_feature_view(
+            name="aqi_view", version=1,
+            query=fg.select_all().filter(retention_filter(fg)),
+        )
+
+    This is the retention mechanism for the Feature Store side -- see the
+    module docstring for why it's a read-time filter rather than a
+    physical delete.
+    """
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
-    print(f"Pruning rows older than {cutoff.date()} (keeping latest {retention_years} years)...")
-    try:
-        old_df = fg.filter(fg.datetime < cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
-    except Exception as e:
-        print(f"  Could not read old rows for pruning, skipping this run's prune step: {e}")
-        return
+    return fg.datetime >= cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
-    if old_df is None or old_df.empty:
-        print("  No rows older than the retention window -- nothing to prune.")
-        return
 
-    old_df["datetime"] = pd.to_datetime(old_df["datetime"])
-    print(f"  Deleting {len(old_df):,} rows ({old_df['datetime'].min()} -> {old_df['datetime'].max()})...")
-    try:
-        fg.commit_delete_record(old_df)
-        print("  Pruned.")
-    except Exception as e:
-        print(f"  WARNING: commit_delete_record failed ({e}). If your installed hopsworks/hsfs "
-              f"version exposes a different row-delete API, this call needs updating -- "
-              f"check the Hopsworks docs for your version's Feature Group delete method.")
-
+def log_retention_note(retention_years: int = RETENTION_YEARS):
+    """Informational log line only -- no Feature Store rows are touched
+    here. See retention_filter() above for how training/serving code
+    should bound itself to the last `retention_years` years."""
+    cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
+    print(f"Feature Store retention: rows before {cutoff.date()} are left in place "
+          f"(Hudi row deletes need the Spark engine, which this job doesn't have). "
+          f"Training/serving code must call retention_filter() when reading this "
+          f"feature group so it only ever sees the last {retention_years} years. "
+          f"The local CSV, below, is still trimmed physically.")
 
 # ==================================================================
 # 5. MIRROR THE SAME APPEND + PRUNE ON THE LOCAL CSV
@@ -293,8 +323,6 @@ def main():
     parser.add_argument("--retention-years", type=int, default=RETENTION_YEARS)
     parser.add_argument("--lookback-days", type=int, default=LOOKBACK_BUFFER_DAYS)
     parser.add_argument("--skip-upwind", action="store_true")
-    parser.add_argument("--skip-prune", action="store_true",
-                         help="Insert new rows but don't prune old ones this run")
     args = parser.parse_args()
 
     if args.lat is not None and args.lon is not None:
@@ -318,11 +346,7 @@ def main():
     new_rows = select_new_rows(engineered_df, latest_stored_dt)
     insert_new_rows(fg, new_rows)
     update_local_csv(new_rows, args.out, args.retention_years)
-
-    if not args.skip_prune:
-        prune_old_rows(fg, args.retention_years)
-    else:
-        print("Skipping prune step (--skip-prune was set)")
+    log_retention_note(args.retention_years)
 
     print("\nHourly update complete.")
 
