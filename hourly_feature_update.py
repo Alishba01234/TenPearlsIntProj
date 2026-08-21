@@ -228,9 +228,10 @@ def insert_new_rows(fg, new_rows: pd.DataFrame):
 def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
     """Deletes rows older than the retention window from the Feature Store
     so it stays a fixed rolling window instead of growing forever. Uses
-    HSFS's commit_delete() on this Hudi-backed feature group (aqiPipeline.py
-    creates it with time_travel_format="HUDI"), which needs a DataFrame of
-    the rows to remove (matched by primary key + event time)."""
+    HSFS's commit_delete_record() on this Hudi-backed feature group
+    (aqiPipeline.py creates it with time_travel_format="HUDI"), which needs
+    a DataFrame of the rows to remove (matched by primary key + event
+    time)."""
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
     print(f"Pruning rows older than {cutoff.date()} (keeping latest {retention_years} years)...")
     try:
@@ -246,10 +247,10 @@ def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
     old_df["datetime"] = pd.to_datetime(old_df["datetime"])
     print(f"  Deleting {len(old_df):,} rows ({old_df['datetime'].min()} -> {old_df['datetime'].max()})...")
     try:
-        fg.commit_delete(old_df)
+        fg.commit_delete_record(old_df)
         print("  Pruned.")
     except Exception as e:
-        print(f"  WARNING: commit_delete failed ({e}). If your installed hopsworks/hsfs "
+        print(f"  WARNING: commit_delete_record failed ({e}). If your installed hopsworks/hsfs "
               f"version exposes a different row-delete API, this call needs updating -- "
               f"check the Hopsworks docs for your version's Feature Group delete method.")
 
