@@ -14,14 +14,11 @@ far too slow/wasteful to run every hour. This script instead:
      (imported, not duplicated) over that short window.
   4. Inserts ONLY the rows newer than what's already stored (an upsert on
      the "datetime" primary key -- Hopsworks/Hudi handles this as a pure
-     append since these datetimes don't exist yet), and mirrors the same
-     rows onto the local aqi_features.csv.
-
-This script is append-only. Retention pruning (keeping only the latest
---retention-years of data, both in the Feature Store and in
-aqi_features.csv) is a separate monthly job -- see monthly_prune.py and
-.github/workflows/monthly_prune.yml -- rather than something this hourly
-script does on every run.
+     append since these datetimes don't exist yet).
+  5. Prunes rows older than --retention-years (default 4) from the
+     Feature Store, and mirrors the same append+prune behavior on the
+     local aqi_features.csv, so both stay a fixed rolling window instead
+     of growing forever.
 
 This file does not modify aqiPipeline.py or train_models.py -- it only
 imports read-only from aqiPipeline.py so feature engineering never drifts
@@ -225,18 +222,43 @@ def insert_new_rows(fg, new_rows: pd.DataFrame):
 
 
 # ==================================================================
-# 4. MIRROR THE NEW ROWS ONTO THE LOCAL CSV
+# 4. PRUNE: KEEP ONLY THE LATEST N YEARS
 # ==================================================================
-# NOTE: retention pruning (both Hopsworks and this CSV) no longer happens
-# here. It used to run every hour with a rolling "now - N years" cutoff,
-# which meant an extra Hopsworks read (and usually a no-op delete) on
-# every single run just to catch the rare hour where something aged out.
-# It's now a separate monthly job -- see monthly_prune.py and
-# .github/workflows/monthly_prune.yml -- that deletes a calendar month's
-# worth of stale rows at a time, anchored to the 1st of the month. This
-# script now only ever appends.
 
-def update_local_csv(new_rows: pd.DataFrame, csv_path: str):
+def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
+    """Deletes rows older than the retention window from the Feature Store
+    so it stays a fixed rolling window instead of growing forever. Uses
+    HSFS's commit_delete() on this Hudi-backed feature group (aqiPipeline.py
+    creates it with time_travel_format="HUDI"), which needs a DataFrame of
+    the rows to remove (matched by primary key + event time)."""
+    cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
+    print(f"Pruning rows older than {cutoff.date()} (keeping latest {retention_years} years)...")
+    try:
+        old_df = fg.filter(fg.datetime < cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
+    except Exception as e:
+        print(f"  Could not read old rows for pruning, skipping this run's prune step: {e}")
+        return
+
+    if old_df is None or old_df.empty:
+        print("  No rows older than the retention window -- nothing to prune.")
+        return
+
+    old_df["datetime"] = pd.to_datetime(old_df["datetime"])
+    print(f"  Deleting {len(old_df):,} rows ({old_df['datetime'].min()} -> {old_df['datetime'].max()})...")
+    try:
+        fg.commit_delete(old_df)
+        print("  Pruned.")
+    except Exception as e:
+        print(f"  WARNING: commit_delete failed ({e}). If your installed hopsworks/hsfs "
+              f"version exposes a different row-delete API, this call needs updating -- "
+              f"check the Hopsworks docs for your version's Feature Group delete method.")
+
+
+# ==================================================================
+# 5. MIRROR THE SAME APPEND + PRUNE ON THE LOCAL CSV
+# ==================================================================
+
+def update_local_csv(new_rows: pd.DataFrame, csv_path: str, retention_years: int = RETENTION_YEARS):
     if new_rows.empty and not os.path.exists(csv_path):
         return
     if os.path.exists(csv_path):
@@ -246,12 +268,14 @@ def update_local_csv(new_rows: pd.DataFrame, csv_path: str):
     else:
         combined = new_rows.copy()
 
+    cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
     before = len(combined)
+    combined = combined[combined["datetime"] >= cutoff]
     combined = combined.sort_values("datetime").reset_index(drop=True)
 
     delete_existing_csv(csv_path)
     combined.to_csv(csv_path, index=False)
-    print(f"Updated {csv_path}: {before:,} -> {len(combined):,} rows "
+    print(f"Updated {csv_path}: {before:,} -> {len(combined):,} rows after retention trim "
           f"({combined['datetime'].min()} -> {combined['datetime'].max()})")
 
 
@@ -265,8 +289,11 @@ def main():
     parser.add_argument("--lat", type=float, default=None)
     parser.add_argument("--lon", type=float, default=None)
     parser.add_argument("--out", default="aqi_features.csv")
+    parser.add_argument("--retention-years", type=int, default=RETENTION_YEARS)
     parser.add_argument("--lookback-days", type=int, default=LOOKBACK_BUFFER_DAYS)
     parser.add_argument("--skip-upwind", action="store_true")
+    parser.add_argument("--skip-prune", action="store_true",
+                         help="Insert new rows but don't prune old ones this run")
     args = parser.parse_args()
 
     if args.lat is not None and args.lon is not None:
@@ -289,7 +316,12 @@ def main():
 
     new_rows = select_new_rows(engineered_df, latest_stored_dt)
     insert_new_rows(fg, new_rows)
-    update_local_csv(new_rows, args.out)
+    update_local_csv(new_rows, args.out, args.retention_years)
+
+    if not args.skip_prune:
+        prune_old_rows(fg, args.retention_years)
+    else:
+        print("Skipping prune step (--skip-prune was set)")
 
     print("\nHourly update complete.")
 
