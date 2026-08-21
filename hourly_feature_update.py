@@ -46,6 +46,7 @@ from aqiPipeline import (  # noqa: F401  -- read-only reuse, see module docstrin
     get_hopsworks_feature_store, delete_existing_csv,
     TARGET_COL, FORECAST_HORIZONS, LONG_ROLLING_WINDOW_HOURS,
 )
+from hopsworks_read_utils import robust_read
 
 # Long enough to fully warm up every lag/rolling feature (max lookback
 # anywhere in the pipeline is 168h = 7 days) with margin to spare.
@@ -71,10 +72,11 @@ def get_latest_stored_datetime(fs, city: str):
     fg = get_feature_group(fs, city)
     cutoff = pd.Timestamp.utcnow().tz_localize(None) - timedelta(days=LOOKBACK_BUFFER_DAYS + 2)
     try:
-        df = fg.filter(fg.datetime >= cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
+        query = fg.filter(fg.datetime >= cutoff.strftime("%Y-%m-%d %H:%M:%S"))
+        df = robust_read(query, label="get_latest_stored_datetime_filtered")
     except Exception as e:
         print(f"  Filtered read failed ({e}), falling back to a full read...")
-        df = fg.read()
+        df = robust_read(fg, label="get_latest_stored_datetime_full")
 
     if df is None or df.empty:
         print("  Feature group has no rows in the recent window -- treating as cold start.")
