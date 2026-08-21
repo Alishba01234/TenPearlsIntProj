@@ -1,9 +1,9 @@
 name: Hourly Feature Pipeline
 
 # Runs hourly_feature_update.py every hour: fetches only the newest hour(s)
-# of data and appends them to the Hopsworks Feature Store and the
-# committed aqi_features.csv. Retention pruning (keeping only the latest
-# 4 years) is a separate monthly job -- see monthly_prune.yml.
+# of data, appends them to the Hopsworks Feature Store, and prunes rows
+# older than the 4-year retention window (both in Hopsworks and in the
+# committed aqi_features.csv).
 
 on:
   schedule:
