@@ -806,6 +806,14 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
     )
 
     print("\nCreating train/test split in Hopsworks (event-time based, no separate val)...")
+    # statistics_config=False: skip Hopsworks' post-write statistics
+    # computation for this training dataset. That step is a separate HTTP
+    # call after the actual split data has already been written, has been
+    # seen to fail with a transient backend metadata-transaction error
+    # (RonDB/NDB lock contention -- "Transaction marked for rollback")
+    # unrelated to whether the split itself succeeded, and train_models.py
+    # reads the split's CSV files directly rather than relying on
+    # Hopsworks-computed statistics, so there's nothing lost by skipping it.
     fv.create_train_test_split(
         train_start=bounds["train_start"],
         train_end=bounds["train_end"],
@@ -813,6 +821,7 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
         test_end=bounds["test_end"],
         description=f"Calendar-anchored train/test split for {city}",
         data_format="csv",
+        statistics_config=False,
     )
     print(f"Feature View 'aqi_fv_{city}' v{version} created with the split registered.")
     return fv
