@@ -32,9 +32,32 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt tensorflow
-          echo "--- Resolved versions (for debugging tensorflow import issues) ---"
-          pip show tensorflow numpy protobuf 2>/dev/null | grep -E "^(Name|Version):"
+          pip install -r requirements.txt
+          # Capture the numpy version requirements.txt actually resolved --
+          # this is the version pandas/xgboost/hopsworks were tested
+          # against, since it's whatever the repo's own pinned/tested
+          # environment produces.
+          PINNED_NUMPY=$(python -c "import numpy; print(numpy.__version__)")
+          echo "numpy resolved by requirements.txt: $PINNED_NUMPY"
+          pip install tensorflow
+          # tensorflow's own dependency resolution can silently shift
+          # numpy to a version that's binary-incompatible with the
+          # already-installed pandas wheel's compiled C extensions
+          # (numpy 1.x vs 2.x changed internal struct layouts -- this is
+          # what produces "numpy.dtype size changed... Expected 96 from C
+          # header, got 88 from PyObject" and crashes EVERY script that
+          # imports pandas, not just the neural network candidate). Force
+          # numpy back to exactly what requirements.txt resolved. If
+          # tensorflow genuinely can't coexist with that numpy version,
+          # this reinstall will make tensorflow itself fail to import --
+          # which is the right trade-off, since pandas/xgboost/hopsworks
+          # are hard requirements for the whole pipeline and tensorflow is
+          # an optional candidate that already degrades gracefully (see
+          # the try/except around `import tensorflow` in train_models.py).
+          pip install "numpy==$PINNED_NUMPY"
+          echo "--- Resolved versions (for debugging import issues) ---"
+          pip show tensorflow numpy pandas protobuf 2>/dev/null | grep -E "^(Name|Version):"
+          python -c "import pandas as pd; print('pandas import OK, version', pd.__version__)"
           python -c "import tensorflow as tf; print('tensorflow import OK, version', tf.__version__)" \
             || echo "tensorflow FAILED TO IMPORT right after install -- see error above"
 
