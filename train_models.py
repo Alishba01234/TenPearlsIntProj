@@ -43,6 +43,8 @@ from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
+from hopsworks_read_utils import robust_train_test_split
+
 try:
     import tensorflow as tf
     from tensorflow.keras import layers, callbacks
@@ -97,7 +99,9 @@ def connect_to_feature_store():
 
 def load_splits(fs, city: str, fv_version: int = 1, td_version: int = 1):
     fv = fs.get_feature_view(f"aqi_fv_{city}", version=fv_version)
-    X_train, X_test, y_train, y_test = fv.get_train_test_split(training_dataset_version=td_version)
+    X_train, X_test, y_train, y_test = robust_train_test_split(
+        fv, training_dataset_version=td_version, label="load_splits"
+    )
 
     def _sort_by_time(X, y, split_name: str):
         order = X["datetime"].argsort().to_numpy()
