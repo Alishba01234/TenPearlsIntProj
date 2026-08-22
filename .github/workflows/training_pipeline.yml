@@ -69,6 +69,12 @@ jobs:
       - name: Train and register models
         env:
           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          # Silences TensorFlow's own startup logging (INFO/WARNING, plus
+          # the harmless "cuInit failed" line it always logs at ERROR
+          # severity on a GPU-less runner like this one while probing for
+          # a CUDA device it then correctly falls back away from). 0=all,
+          # 1=filter INFO, 2=filter WARNING too, 3=only real errors.
+          TF_CPP_MIN_LOG_LEVEL: "3"
         run: python train_models.py --city karachi
 
       - name: Commit evaluation summary + split version (if changed)
