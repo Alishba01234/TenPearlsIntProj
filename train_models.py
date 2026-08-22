@@ -49,10 +49,21 @@ try:
     import tensorflow as tf
     from tensorflow.keras import layers, callbacks
     TENSORFLOW_AVAILABLE = True
-except ImportError:
+except Exception as e:
+    # Deliberately catching Exception, not just ImportError: a broken /
+    # version-mismatched tensorflow install (e.g. a numpy/protobuf ABI
+    # conflict from installing tensorflow as a second, separate pip step
+    # after requirements.txt already pinned those shared deps) can raise
+    # things other than a plain ImportError -- ValueError and RuntimeError
+    # from native-extension loading are both common. A narrower except
+    # would let those crash the whole script instead of degrading
+    # gracefully to "skip the neural network candidate", and either way we
+    # want the REAL reason printed, not a generic "not installed" message
+    # that's often not what's actually wrong (it's frequently installed,
+    # just broken).
     TENSORFLOW_AVAILABLE = False
-    print("WARNING: tensorflow not installed -- neural network candidate will be "
-          "skipped. Run: pip install tensorflow")
+    print(f"WARNING: tensorflow import failed -- neural network candidate will "
+          f"be skipped. Underlying error ({type(e).__name__}): {e}")
 
 
 class KerasWrapper:
