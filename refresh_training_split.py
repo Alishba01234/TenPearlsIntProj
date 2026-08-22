@@ -45,13 +45,14 @@ def get_new_training_dataset_version(fv, fallback_hint: int = None):
     approaches and falls back to a locally tracked counter if neither
     works -- verify against the Hopsworks UI (Feature View -> Training
     Datasets tab) if this ever looks wrong."""
-    try:
-        tds = fv.get_training_datasets()
-        versions = [td.version for td in tds]
-        if versions:
-            return max(versions)
-    except Exception as e:
-        print(f"  Could not list training datasets via get_training_datasets() ({e})")
+    if fv is not None:
+        try:
+            tds = fv.get_training_datasets()
+            versions = [td.version for td in tds]
+            if versions:
+                return max(versions)
+        except Exception as e:
+            print(f"  Could not list training datasets via get_training_datasets() ({e})")
 
     if fallback_hint is not None:
         print(f"  Falling back to locally tracked counter: v{fallback_hint}")
@@ -92,10 +93,30 @@ def main():
     bounds = compute_split_boundaries(df_for_split)
 
     print("\nCreating a fresh training-dataset split (new version) under the existing Feature View...")
-    fv = create_feature_view_split(fs, df_for_split, city_key, bounds, version=args.fv_version)
+    try:
+        fv = create_feature_view_split(fs, df_for_split, city_key, bounds, version=args.fv_version)
+    except Exception as e:
+        # The split's data can finish writing successfully even when a
+        # later step (e.g. Hopsworks' post-write statistics computation)
+        # throws -- see aqiPipeline.py's create_feature_view_split for the
+        # specific case this guards against. Don't let that possibility
+        # silently leave latest_td_version.txt pointing at yesterday's
+        # split: fall back to looking the Feature View up directly and
+        # still try to recover whatever version number actually landed.
+        print(f"  create_feature_view_split raised ({e}); the split's data "
+              f"may still have written successfully -- checking the Feature "
+              f"View directly for a new version before giving up...")
+        try:
+            fv = fs.get_feature_view(name=f"aqi_fv_{city_key}", version=args.fv_version)
+        except Exception as lookup_err:
+            print(f"  Could not even look up the Feature View ({lookup_err}) -- "
+                  f"this looks like a genuine failure, not just a stats-step "
+                  f"hiccup after a successful write.")
+            fv = None
 
     local_counter = read_local_counter()
-    new_version = get_new_training_dataset_version(fv, fallback_hint=local_counter + 1)
+    fallback_hint = local_counter + 1 if fv is not None else None
+    new_version = get_new_training_dataset_version(fv, fallback_hint=fallback_hint)
 
     if new_version is not None:
         with open(VERSION_FILE, "w") as f:
