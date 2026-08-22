@@ -44,6 +44,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add aqi_features.csv
           git diff --staged --quiet || git commit -m "Hourly feature update [skip ci]"
+          # Running hourly_feature_update.py (which imports aqiPipeline.py)
+          # can leave OTHER tracked files touched as a side effect --
+          # commonly regenerated __pycache__/*.pyc bytecode -- that we
+          # never intended to commit. "git pull --rebase" refuses to run
+          # at all if ANY tracked file has unstaged changes, even ones
+          # totally unrelated to aqi_features.csv, so discard anything we
+          # didn't deliberately stage and commit above before rebasing.
+          git checkout -- .
           # Same race the daily training workflow can hit: if another run
           # of this workflow (e.g. a manual workflow_dispatch overlapping
           # the scheduled hourly run) or the daily training job pushed to
