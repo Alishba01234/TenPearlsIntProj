@@ -815,13 +815,31 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
     # documented API guarantee though, so downstream code (see
     # refresh_training_split.py) reads back whatever version Hopsworks
     # actually assigned rather than assuming it's 1.
+    # NOTE: deletion is a method on the Feature View (fv.delete_training_dataset(...)
+    # / fv.delete_all_training_datasets()), NOT on the objects returned by
+    # fv.get_training_datasets() -- those are metadata-only and calling
+    # .delete() directly on them raises "'super' object has no attribute
+    # 'delete'" on this hsfs version. delete_all_training_datasets() is the
+    # primary path since it matches the intent exactly (wipe everything
+    # before creating the new split); per-version delete_training_dataset()
+    # is kept as a fallback for hsfs versions that don't expose the
+    # all-at-once call.
     try:
-        existing_tds = fv.get_training_datasets()
-        for td in existing_tds:
-            print(f"  Deleting existing training dataset v{td.version} before creating a new split...")
-            td.delete()
+        fv.delete_all_training_datasets()
+        print("  Deleted all existing training dataset(s) via delete_all_training_datasets().")
+    except AttributeError:
+        try:
+            existing_tds = fv.get_training_datasets()
+            for td in existing_tds:
+                print(f"  Deleting existing training dataset v{td.version} before creating a new split...")
+                fv.delete_training_dataset(training_dataset_version=td.version)
+        except Exception as e:
+            print(f"  Could not enumerate/delete existing training datasets ({e}) -- "
+                  f"proceeding to create the new split anyway. If old versions "
+                  f"keep accumulating, check the Hopsworks UI (Feature View -> "
+                  f"Training Datasets) and this hsfs version's delete API.")
     except Exception as e:
-        print(f"  Could not enumerate/delete existing training datasets ({e}) -- "
+        print(f"  Could not delete existing training datasets ({e}) -- "
               f"proceeding to create the new split anyway. If old versions "
               f"keep accumulating, check the Hopsworks UI (Feature View -> "
               f"Training Datasets) and this hsfs version's delete API.")
