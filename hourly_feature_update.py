@@ -21,10 +21,13 @@ far too slow/wasteful to run every hour. This script instead:
      Resending it on later runs, once real future data has arrived, lets
      Hudi's upsert overwrite that NaN with the real value. Genuinely new
      datetimes are a pure append under the same upsert call.
-  5. Prunes rows older than --retention-years (default 4) from the
-     Feature Store, and mirrors the same append+prune behavior on the
-     local aqi_features.csv, so both stay a fixed rolling window instead
-     of growing forever.
+  5. Enforces --retention-years (default 4) via Hopsworks' native TTL on
+     the Feature Store side (a metadata setting Hopsworks itself acts on
+     in the background -- see ensure_retention_ttl() for why this, and
+     not a client-side row delete, is what's used here), and mirrors the
+     same window with an explicit trim on the local aqi_features.csv
+     mirror, so both stay a fixed rolling window instead of growing
+     forever.
 
 This file does not modify aqiPipeline.py or train_models.py -- it only
 imports read-only from aqiPipeline.py so feature engineering never drifts
@@ -270,33 +273,48 @@ def insert_new_rows(fg, new_rows: pd.DataFrame):
 # 4. PRUNE: KEEP ONLY THE LATEST N YEARS
 # ==================================================================
 
-def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
-    """Deletes rows older than the retention window from the Feature Store
-    so it stays a fixed rolling window instead of growing forever. Uses
-    HSFS's commit_delete() on this Hudi-backed feature group (aqiPipeline.py
-    creates it with time_travel_format="HUDI"), which needs a DataFrame of
-    the rows to remove (matched by primary key + event time)."""
-    cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
-    print(f"Pruning rows older than {cutoff.date()} (keeping latest {retention_years} years)...")
-    try:
-        old_df = fg.filter(fg.datetime < cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
-    except Exception as e:
-        print(f"  Could not read old rows for pruning, skipping this run's prune step: {e}")
-        return
+def ensure_retention_ttl(fg, retention_years: int = RETENTION_YEARS):
+    """Enforces the retention window via Hopsworks' native TTL rather than
+    a client-side row delete.
 
-    if old_df is None or old_df.empty:
-        print("  No rows older than the retention window -- nothing to prune.")
-        return
+    Why not delete rows directly: hsfs's row-delete API (remove_rows(),
+    and the older deprecated commit_delete() this used to call) refuses
+    to run at all for a HUDI-backed feature group -- which is what
+    aqiPipeline.py creates (time_travel_format="HUDI") -- unless the
+    CALLING client is itself running under the Spark engine:
 
-    old_df["datetime"] = pd.to_datetime(old_df["datetime"])
-    print(f"  Deleting {len(old_df):,} rows ({old_df['datetime'].min()} -> {old_df['datetime'].max()})...")
+        if self.time_travel_format == "HUDI" and not
+        engine._get_type().startswith("spark"):
+            raise NotImplementedError(
+                "Deleting rows is only supported for HUDI feature groups "
+                "when using the Spark engine.")
+
+    (from hsfs.feature_group.FeatureGroup.remove_rows). This GitHub
+    Actions runner uses the plain Python client (no PySpark installed),
+    so that path is a hard failure every time regardless of what
+    DataFrame is passed -- there's no fix on our end that makes a
+    client-side delete work here.
+
+    TTL sidesteps this entirely: it's a metadata setting (a single REST
+    call via fg.enable_ttl()), enforced by Hopsworks itself in the
+    background, independent of which engine the calling client uses.
+    Calling this every run is cheap and idempotent -- it just keeps the
+    feature group's TTL in sync with --retention-years, self-healing if
+    it's ever changed manually in the Hopsworks UI."""
+    ttl = timedelta(days=retention_years * 365)
+    print(f"Ensuring feature group TTL is set to {retention_years} years ({ttl})...")
     try:
-        fg.delete(old_df)
-        print("  Pruned.")
+        fg.enable_ttl(ttl)
+        print(f"  TTL confirmed: rows older than {ttl} are automatically "
+              f"removed by Hopsworks in the background -- no client-side "
+              f"delete needed. Verify in the Hopsworks UI (Feature Group -> "
+              f"Settings) that removal is actually happening if this is ever "
+              f"in doubt.")
     except Exception as e:
-        print(f"  WARNING: commit_delete failed ({e}). If your installed hopsworks/hsfs "
-              f"version exposes a different row-delete API, this call needs updating -- "
-              f"check the Hopsworks docs for your version's Feature Group delete method.")
+        print(f"  WARNING: could not set TTL ({e}). Rows older than the "
+              f"retention window will NOT be automatically removed until "
+              f"this is resolved -- check the Hopsworks UI (Feature Group "
+              f"-> Settings) and this hsfs version's enable_ttl API.")
 
 
 # ==================================================================
@@ -338,7 +356,7 @@ def main():
     parser.add_argument("--lookback-days", type=int, default=LOOKBACK_BUFFER_DAYS)
     parser.add_argument("--skip-upwind", action="store_true")
     parser.add_argument("--skip-prune", action="store_true",
-                         help="Insert new rows but don't prune old ones this run")
+                         help="Insert new rows but don't sync the retention TTL this run")
     args = parser.parse_args()
 
     if args.lat is not None and args.lon is not None:
@@ -366,9 +384,9 @@ def main():
     update_local_csv(new_rows, args.out, args.retention_years)
 
     if not args.skip_prune:
-        prune_old_rows(fg, args.retention_years)
+        ensure_retention_ttl(fg, args.retention_years)
     else:
-        print("Skipping prune step (--skip-prune was set)")
+        print("Skipping TTL sync (--skip-prune was set)")
 
     print("\nHourly update complete.")
 
