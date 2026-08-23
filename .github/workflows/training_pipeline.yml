@@ -38,7 +38,7 @@ jobs:
       - name: Refresh training split (pick up new hourly data)
         env:
           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
-        run: python refresh_training_split.py --city Karachi --version 1
+        run: python refresh_training_split.py --city Karachi
 
       - name: Train and register models
         env:
