@@ -270,33 +270,33 @@ def insert_new_rows(fg, new_rows: pd.DataFrame):
 # 4. PRUNE: KEEP ONLY THE LATEST N YEARS
 # ==================================================================
 
-# def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
-#     """Deletes rows older than the retention window from the Feature Store
-#     so it stays a fixed rolling window instead of growing forever. Uses
-#     HSFS's commit_delete() on this Hudi-backed feature group (aqiPipeline.py
-#     creates it with time_travel_format="HUDI"), which needs a DataFrame of
-#     the rows to remove (matched by primary key + event time)."""
-#     cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
-#     print(f"Pruning rows older than {cutoff.date()} (keeping latest {retention_years} years)...")
-#     try:
-#         old_df = fg.filter(fg.datetime < cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
-#     except Exception as e:
-#         print(f"  Could not read old rows for pruning, skipping this run's prune step: {e}")
-#         return
+def prune_old_rows(fg, retention_years: int = RETENTION_YEARS):
+    """Deletes rows older than the retention window from the Feature Store
+    so it stays a fixed rolling window instead of growing forever. Uses
+    HSFS's commit_delete() on this Hudi-backed feature group (aqiPipeline.py
+    creates it with time_travel_format="HUDI"), which needs a DataFrame of
+    the rows to remove (matched by primary key + event time)."""
+    cutoff = pd.Timestamp.now() - pd.DateOffset(years=retention_years)
+    print(f"Pruning rows older than {cutoff.date()} (keeping latest {retention_years} years)...")
+    try:
+        old_df = fg.filter(fg.datetime < cutoff.strftime("%Y-%m-%d %H:%M:%S")).read()
+    except Exception as e:
+        print(f"  Could not read old rows for pruning, skipping this run's prune step: {e}")
+        return
 
-#     if old_df is None or old_df.empty:
-#         print("  No rows older than the retention window -- nothing to prune.")
-#         return
+    if old_df is None or old_df.empty:
+        print("  No rows older than the retention window -- nothing to prune.")
+        return
 
-#     old_df["datetime"] = pd.to_datetime(old_df["datetime"])
-#     print(f"  Deleting {len(old_df):,} rows ({old_df['datetime'].min()} -> {old_df['datetime'].max()})...")
-#     try:
-#         fg.commit_delete(old_df)
-#         print("  Pruned.")
-#     except Exception as e:
-#         print(f"  WARNING: commit_delete failed ({e}). If your installed hopsworks/hsfs "
-#               f"version exposes a different row-delete API, this call needs updating -- "
-#               f"check the Hopsworks docs for your version's Feature Group delete method.")
+    old_df["datetime"] = pd.to_datetime(old_df["datetime"])
+    print(f"  Deleting {len(old_df):,} rows ({old_df['datetime'].min()} -> {old_df['datetime'].max()})...")
+    try:
+        fg.delete(old_df)
+        print("  Pruned.")
+    except Exception as e:
+        print(f"  WARNING: commit_delete failed ({e}). If your installed hopsworks/hsfs "
+              f"version exposes a different row-delete API, this call needs updating -- "
+              f"check the Hopsworks docs for your version's Feature Group delete method.")
 
 
 # ==================================================================
@@ -365,10 +365,10 @@ def main():
     insert_new_rows(fg, new_rows)
     update_local_csv(new_rows, args.out, args.retention_years)
 
-    # if not args.skip_prune:
-    #     prune_old_rows(fg, args.retention_years)
-    # else:
-    #     print("Skipping prune step (--skip-prune was set)")
+    if not args.skip_prune:
+        prune_old_rows(fg, args.retention_years)
+    else:
+        print("Skipping prune step (--skip-prune was set)")
 
     print("\nHourly update complete.")
 
