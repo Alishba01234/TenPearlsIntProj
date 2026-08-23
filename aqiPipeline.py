@@ -805,6 +805,27 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
         description=f"3-day-ahead AQI forecasting feature view for {city}",
     )
 
+    # Delete any existing training-dataset version(s) under this Feature
+    # View before creating a new split -- we don't want v1, v2, v3, ...
+    # piling up in Hopsworks storage every time this runs (daily via
+    # refresh_training_split.py, or on manual re-runs). Hopsworks assigns
+    # the training-dataset version number itself; deleting everything
+    # first before creating a new split means the new one lands back at
+    # version 1 whenever nothing else remains. That reuse isn't a
+    # documented API guarantee though, so downstream code (see
+    # refresh_training_split.py) reads back whatever version Hopsworks
+    # actually assigned rather than assuming it's 1.
+    try:
+        existing_tds = fv.get_training_datasets()
+        for td in existing_tds:
+            print(f"  Deleting existing training dataset v{td.version} before creating a new split...")
+            td.delete()
+    except Exception as e:
+        print(f"  Could not enumerate/delete existing training datasets ({e}) -- "
+              f"proceeding to create the new split anyway. If old versions "
+              f"keep accumulating, check the Hopsworks UI (Feature View -> "
+              f"Training Datasets) and this hsfs version's delete API.")
+
     print("\nCreating train/test split in Hopsworks (event-time based, no separate val)...")
     # statistics_config=False: skip Hopsworks' post-write statistics
     # computation for this training dataset. That step is a separate HTTP
