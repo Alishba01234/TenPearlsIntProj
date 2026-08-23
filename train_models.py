@@ -422,9 +422,48 @@ def train_for_horizon(horizon: int, X_train, y_train, X_test, y_test, train_date
 # 4. MODEL REGISTRY
 # ==================================================================
 
+def delete_existing_model_versions(project, model_name: str):
+    """Deletes any existing registered version(s) of this model before a
+    new one is created -- mr.python.create_model() auto-increments the
+    version every time it's called with the same name, so without this,
+    daily retraining would pile up aqi_{city}_{horizon}h v1, v2, v3, ...
+    in the Model Registry forever, the same accumulation problem
+    aqiPipeline.py's create_feature_view_split() guards against for
+    training-dataset splits. This lands the new model back at v1 whenever
+    nothing else remains.
+
+    Unlike the training-dataset delete in aqiPipeline.py, Model.delete()
+    in hsml IS a directly supported method on the objects returned by
+    get_models() -- no super()/MRO issue here -- but the delete is still
+    wrapped defensively so a Model Registry hiccup degrades to "a new
+    version gets created alongside the old one" rather than crashing the
+    whole training run and losing today's model entirely."""
+    mr = project.get_model_registry()
+    try:
+        existing_models = mr.get_models(name=model_name)
+    except Exception as e:
+        print(f"  Could not list existing models named '{model_name}' ({e}) -- "
+              f"proceeding to register the new one anyway. If old versions "
+              f"keep accumulating, check the Hopsworks UI (Model Registry) "
+              f"and this hsml version's list/delete API.")
+        return
+
+    for m in existing_models:
+        try:
+            print(f"  Deleting existing model '{model_name}' v{m.version} before registering the new one...")
+            m.delete()
+        except Exception as e:
+            print(f"  WARNING: found '{model_name}' v{m.version} but FAILED to delete it ({e}). "
+                  f"The new model will still be registered, but old versions may pile up -- "
+                  f"check the Hopsworks UI (Model Registry) to clean up manually.")
+
+
 def register_model(project, result: dict, city: str, X_train: pd.DataFrame):
     """Saves the winning model for one horizon to the Hopsworks Model
-    Registry, tagged with its test-set metrics."""
+    Registry, tagged with its test-set metrics. Any existing version(s)
+    of this model are deleted first so this stays a single replaced-in-
+    place v1 rather than accumulating v1, v2, v3, ... -- same pattern as
+    the training-dataset split in aqiPipeline.py."""
     from hsml.schema import Schema
     from hsml.model_schema import ModelSchema
 
@@ -432,6 +471,8 @@ def register_model(project, result: dict, city: str, X_train: pd.DataFrame):
     model_name = f"aqi_{city}_{horizon}h"
     model_dir = f"model_{model_name}"
     os.makedirs(model_dir, exist_ok=True)
+
+    delete_existing_model_versions(project, model_name)
 
     if isinstance(result["best_model"], KerasWrapper):
         # Keras models need their own save format, not joblib pickling.
@@ -469,6 +510,13 @@ def register_model(project, result: dict, city: str, X_train: pd.DataFrame):
     hops_model.save(model_dir)
     print(f"Registered '{model_name}' in Model Registry "
           f"(algorithm: {result['best_model_name']}, test RMSE: {result['test_metrics']['rmse']:.2f})")
+
+    if hops_model.version != 1:
+        print(f"  WARNING: '{model_name}' landed at v{hops_model.version}, not v1 as expected. "
+              f"delete_existing_model_versions() is supposed to clear old versions before this "
+              f"registration so it always stays v1 -- either that delete silently failed this "
+              f"run, or this hsml version doesn't reuse a freed version number. Check the "
+              f"Hopsworks UI (Model Registry) for leftover old versions of '{model_name}'.")
 
 # ==================================================================
 # MAIN
