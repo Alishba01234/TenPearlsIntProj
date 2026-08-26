@@ -1,9 +1,7 @@
 """
 End-to-end AQI forecasting pipeline -- fetch, clean, engineer, store, split.
-
 Combines what used to be two scripts (aqi_pipeline.py + create_train_test_split.py)
 into one continuous run:
-
   1. Fetch raw weather + air quality data (Open-Meteo), auto date range =
      today going back N years (default 4). No dates typed in manually.
   2. Clean the raw data (duplicates, gaps, interpolation, negative-value clipping).
@@ -23,13 +21,6 @@ into one continuous run:
      reading the data back.
   7. Create a chronological 70/15/15 train/validation/test split -- both
      as local CSVs and as a registered Hopsworks Feature View split.
-
-Prerequisites:
-    pip install requests pandas numpy hopsworks python-dotenv holidays
-
-    Create a ".env" file in this folder containing:
-        HOPSWORKS_API_KEY=your_key_here
-
 Usage:
     python aqi_pipeline.py --city "Karachi"
     python aqi_pipeline.py --lat 24.8608 --lon 67.0104 --skip-hopsworks
@@ -40,7 +31,6 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-
 import hopsworks
 import numpy as np
 import pandas as pd
@@ -49,10 +39,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Hopsworks' internal client logs a full ERROR + traceback whenever a read
-# hits the "not materialized yet" case, even though our code below catches
-# it cleanly. This is just noisy logging, not an uncaught error -- silence
-# it so only our own "still waiting" messages show up.
 logging.getLogger("hsfs").setLevel(logging.CRITICAL)
 logging.getLogger("hopsworks").setLevel(logging.CRITICAL)
 
@@ -66,10 +52,6 @@ CHUNK_DAYS = 90
 WEATHER_VARS = [
     "temperature_2m", "relative_humidity_2m", "precipitation",
     "pressure_msl", "cloud_cover", "wind_speed_10m", "wind_direction_10m",
-    # Added: all confirmed valid params on Open-Meteo's /v1/archive endpoint
-    # (https://open-meteo.com/en/docs/historical-weather-api) -- chosen for a
-    # physical link to dispersion/stagnation conditions, not just to pad
-    # feature count:
     "dew_point_2m",           # narrow dew-point spread -> fog/inversion risk
     "apparent_temperature",   # combines temp+humidity+wind nonlinearly
     "vapour_pressure_deficit",  # atmospheric dryness
@@ -91,18 +73,9 @@ ROLLING_WINDOWS = [24]
 LONG_ROLLING_WINDOW_HOURS = 168  # 7 days -- longer-horizon trend signal for the 48h/72h models
 FORECAST_HORIZONS = (24, 48, 72)
 TARGET_COLS = [f"target_{TARGET_COL}_{h}h_ahead" for h in FORECAST_HORIZONS]
-
-# Spatial/advection features: sample air quality at fixed points around the
-# city and blend them by how well each aligns with the current wind
-# direction, as a proxy for "what's about to arrive" -- advection is a real,
-# well-established driver for multi-day AQI forecasting that a single-point
-# fetch can't see at all.
 UPWIND_BEARINGS = {"N": 0, "E": 90, "S": 180, "W": 270}
 UPWIND_DISTANCE_KM = 50
 
-# Columns that are NaN for the first/last few rows because of lag/shift
-# windows -- these rows can't be used for training and are dropped only at
-# split time (the feature store itself keeps the full raw history).
 EDGE_SENSITIVE_COLS = [
     "aqi_lag_72h", "aqi_rolling_mean_24h",
     f"aqi_rolling_mean_{LONG_ROLLING_WINDOW_HOURS}h",
@@ -110,14 +83,7 @@ EDGE_SENSITIVE_COLS = [
     f"pm10_rolling_mean_{LONG_ROLLING_WINDOW_HOURS}h",
 ] + TARGET_COLS
 
-# TRAIN_FRAC = 0.70
-# VAL_FRAC = 0.15  # remaining 0.15 is test
-
-
-# ==================================================================
-# 1. FETCHING
-# ==================================================================
-
+# FETCHING
 def geocode_city(city_name: str) -> tuple[float, float]:
     resp = requests.get(GEOCODING_URL, params={"name": city_name, "count": 1})
     resp.raise_for_status()
@@ -129,7 +95,6 @@ def geocode_city(city_name: str) -> tuple[float, float]:
           f"({r['latitude']}, {r['longitude']})")
     return r["latitude"], r["longitude"]
 
-
 def date_chunks(start: str, end: str, chunk_days: int = CHUNK_DAYS):
     start_dt = datetime.strptime(start, "%Y-%m-%d")
     end_dt = datetime.strptime(end, "%Y-%m-%d")
@@ -138,7 +103,6 @@ def date_chunks(start: str, end: str, chunk_days: int = CHUNK_DAYS):
         chunk_end = min(cur + timedelta(days=chunk_days - 1), end_dt)
         yield cur.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")
         cur = chunk_end + timedelta(days=1)
-
 
 def fetch_chunk(url: str, params: dict, retries: int = 3) -> dict:
     for attempt in range(1, retries + 1):
@@ -152,7 +116,6 @@ def fetch_chunk(url: str, params: dict, retries: int = 3) -> dict:
                 raise
             time.sleep(2 * attempt)
 
-
 def fetch_weather(lat: float, lon: float, start: str, end: str) -> pd.DataFrame:
     frames = []
     for c_start, c_end in date_chunks(start, end):
@@ -165,7 +128,6 @@ def fetch_weather(lat: float, lon: float, start: str, end: str) -> pd.DataFrame:
         })
         frames.append(pd.DataFrame(data["hourly"]))
     return pd.concat(frames, ignore_index=True)
-
 
 def fetch_air_quality(lat: float, lon: float, start: str, end: str) -> pd.DataFrame:
     if start < AIR_QUALITY_MIN_DATE:
@@ -186,7 +148,6 @@ def fetch_air_quality(lat: float, lon: float, start: str, end: str) -> pd.DataFr
         frames.append(pd.DataFrame(data["hourly"]))
     return pd.concat(frames, ignore_index=True)
 
-
 def offset_coordinates(lat: float, lon: float, bearing_deg: float, distance_km: float) -> tuple[float, float]:
     """Destination point at a given compass bearing and great-circle
     distance from (lat, lon). Standard spherical-earth formula."""
@@ -199,7 +160,6 @@ def offset_coordinates(lat: float, lon: float, bearing_deg: float, distance_km: 
         np.cos(d_r) - np.sin(lat1) * np.sin(lat2),
     )
     return float(np.degrees(lat2)), float(np.degrees(lon2))
-
 
 def fetch_upwind_air_quality(lat: float, lon: float, start: str, end: str,
                               bearings: dict = UPWIND_BEARINGS,
@@ -218,11 +178,7 @@ def fetch_upwind_air_quality(lat: float, lon: float, start: str, end: str,
         merged = dir_df if merged is None else pd.merge(merged, dir_df, on="time", how="outer")
     return merged
 
-
-# ==================================================================
-# 2. CLEANING
-# ==================================================================
-
+# CLEANING
 def clean_dataset(df: pd.DataFrame, extra_numeric_cols: list = None) -> pd.DataFrame:
     """Data-quality cleaning on the raw merged data, BEFORE feature
     engineering -- derived features (lags, rolling means) are computed from
@@ -243,10 +199,6 @@ def clean_dataset(df: pd.DataFrame, extra_numeric_cols: list = None) -> pd.DataF
         print(f"  Note: {len(missing_hours)} hourly timestamps missing entirely "
               f"from the sequence (gaps in source data, not interpolated)")
 
-    # Derived from the actual var lists (+ any extra cols like upwind
-    # points) rather than a separately hand-maintained copy, so new
-    # variables added to WEATHER_VARS/AIR_QUALITY_VARS can't silently skip
-    # cleaning the way the old hardcoded list would have.
     numeric_cols = WEATHER_VARS + AIR_QUALITY_VARS + (extra_numeric_cols or [])
     numeric_cols = [c for c in numeric_cols if c in df.columns]
     missing_before = df[numeric_cols].isna().sum().sum()
@@ -268,11 +220,7 @@ def clean_dataset(df: pd.DataFrame, extra_numeric_cols: list = None) -> pd.DataF
     print(f"Cleaning done: {before:,} -> {len(df):,} rows")
     return df
 
-
-# ==================================================================
-# 3. FEATURE ENGINEERING
-# ==================================================================
-
+# FEATURE ENGINEERING
 def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     dt = df["datetime"]
     df["hour"] = dt.dt.hour
@@ -280,7 +228,6 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     df["month"] = dt.dt.month
     df["day_of_year"] = dt.dt.dayofyear
     return df
-
 
 def add_aqi_features(df: pd.DataFrame, col: str = TARGET_COL, prefix: str = "aqi") -> pd.DataFrame:
     """Lag features at exactly the 3 forecast horizons, a short rolling mean
@@ -291,11 +238,9 @@ def add_aqi_features(df: pd.DataFrame, col: str = TARGET_COL, prefix: str = "aqi
     df[f"{prefix}_change_rate_1h"] = df[col].diff()
     return df
 
-
 def add_pm25_change_rate(df: pd.DataFrame) -> pd.DataFrame:
     df["pm25_change_rate_1h"] = df["pm2_5"].diff()
     return df
-
 
 def add_extra_lag_features(df: pd.DataFrame, col: str = TARGET_COL, prefix: str = "aqi") -> pd.DataFrame:
     """Additional AQI lags between the 3 forecast-horizon lags (6/12/36/60h)
@@ -309,9 +254,7 @@ def add_extra_lag_features(df: pd.DataFrame, col: str = TARGET_COL, prefix: str 
     df[f"{prefix}_rolling_std_{ROLLING_WINDOWS[0]}h"] = df[col].rolling(ROLLING_WINDOWS[0]).std()
     return df
 
-
 POLLUTANT_LAG_HOURS = [24, 48, 72]  # matches all 3 forecast horizons, not just 24h
-
 
 def add_pollutant_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     """Lags of ALL measured pollutants at 24h/48h/72h -- PM2.5 and NO2 were
@@ -322,12 +265,10 @@ def add_pollutant_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     pollutant's own multi-day memory is a different signal from AQI's
     multi-day memory -- e.g. NO2 (traffic-driven, decays faster) trending
     down over 72h while AQI stays flat tells the 72h model something AQI's
-    own lag alone can't.
-
-    These are PAST readings only (shift with a positive lag), not future --
-    unlike add_future_weather_features(), pollutant concentrations are
-    direct inputs to the US AQI formula, so only past values are safe to
-    use here."""
+    own lag alone can't.These are PAST readings only (shift with a positive
+    lag), not future --unlike add_future_weather_features(), pollutant 
+    concentrations are direct inputs to the US AQI formula, so only past 
+    values are safe to use here."""
     pollutants = {
         "pm25": "pm2_5", "no2": "nitrogen_dioxide", "pm10": "pm10",
         "co": "carbon_monoxide", "so2": "sulphur_dioxide", "ozone": "ozone",
@@ -336,7 +277,6 @@ def add_pollutant_lag_features(df: pd.DataFrame) -> pd.DataFrame:
         for short_name, col in pollutants.items():
             df[f"{short_name}_lag_{lag}h"] = df[col].shift(lag)
     return df
-
 
 def add_pm_ratio_feature(df: pd.DataFrame) -> pd.DataFrame:
     """PM2.5/PM10 ratio -- a standard air-quality source signature. A LOW
@@ -350,7 +290,6 @@ def add_pm_ratio_feature(df: pd.DataFrame) -> pd.DataFrame:
     df["pm25_pm10_ratio"] = df["pm2_5"] / (df["pm10"] + 1e-3)
     return df
 
-
 def add_weather_trend_features(df: pd.DataFrame) -> pd.DataFrame:
     """Rolling weather aggregates that capture stagnation/dispersion
     conditions rather than instantaneous readings -- sustained low wind
@@ -362,14 +301,14 @@ def add_weather_trend_features(df: pd.DataFrame) -> pd.DataFrame:
     A 72h precipitation sum is added alongside the existing 24h one -- a
     dry 72h window is a materially different washout history than a dry
     24h window that follows heavy rain the day before.
-
     stagnation_index is an explicit interaction (low wind AND no rain =
     pollutants both accumulating and not being washed out), not just two
     separate columns. This matters specifically because Ridge -- the model
     that's been winning every horizon so far -- is linear and can't
     discover this kind of AND-combination on its own from the two raw
     columns; tree models could already infer it via splits on both, but
-    Ridge needs it handed to it explicitly to use it at all."""
+    Ridge needs it handed to it explicitly to use it at all.
+    """
     df["wind_speed_rolling_mean_24h"] = df["wind_speed_10m"].rolling(24).mean()
     df["wind_speed_rolling_std_24h"] = df["wind_speed_10m"].rolling(24).std()
     df["precipitation_rolling_sum_24h"] = df["precipitation"].rolling(24).sum()
@@ -379,36 +318,25 @@ def add_weather_trend_features(df: pd.DataFrame) -> pd.DataFrame:
     ) * (1 / (df["precipitation_rolling_sum_24h"] + 1))
     return df
 
-
 def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     """Day-of-week signal (traffic/industrial activity patterns) -- distinct
     from the existing raw 'day' (day-of-month) column, which carries little
     real signal for AQI and isn't cyclically encoded like hour/month are.
-
     is_rush_hour is a separate, sharper signal than hour_sin/cos: traffic
     emissions spike in two short windows (morning + evening commute)
     rather than varying smoothly across the day, which a single sin/cos
     pair can't represent as a step-like effect. Kept as an explicit 0/1
     flag mainly because tree-based models (RF/XGBoost) split on thresholds
     and benefit from an explicit flag more than from inferring it out of a
-    continuous cyclical encoding.
-
-    is_public_holiday uses the `holidays` package's real Pakistan calendar
-    (Eid-ul-Fitr, Eid-ul-Adha, Pakistan Day, Labour Day, etc.) -- NOT
-    hand-typed dates -- since public holidays measurably suppress traffic
-    and industrial activity, a real driver of day-to-day AQI variation that
-    is_weekend alone doesn't capture (Eid moves around the calendar and
-    isn't tied to weekends). Requires `pip install holidays`."""
+    continuous cyclical encoding."""
     df["is_weekend"] = df["datetime"].dt.dayofweek.isin([5, 6]).astype(int)
     hour = df["datetime"].dt.hour
     df["is_rush_hour"] = (hour.isin([7, 8, 9]) | hour.isin([17, 18, 19, 20])).astype(int)
-
     import holidays as holidays_lib
     years = sorted(df["datetime"].dt.year.unique().tolist())
     pk_holidays = holidays_lib.Pakistan(years=years)
     df["is_public_holiday"] = df["datetime"].dt.date.isin(pk_holidays).astype(int)
     return df
-
 
 def add_aqi_acceleration_feature(df: pd.DataFrame, col: str = TARGET_COL) -> pd.DataFrame:
     """Second derivative of AQI -- is the rate of change itself speeding up
@@ -422,7 +350,6 @@ def add_aqi_acceleration_feature(df: pd.DataFrame, col: str = TARGET_COL) -> pd.
     df["aqi_acceleration_1h"] = df[col].diff().diff()
     return df
 
-
 def add_aqi_rolling_extremes(df: pd.DataFrame, col: str = TARGET_COL, prefix: str = "aqi") -> pd.DataFrame:
     """Rolling min/max over the same 24h window as the existing rolling
     mean/std -- 'how bad has it peaked recently' and 'how clean was the
@@ -433,9 +360,7 @@ def add_aqi_rolling_extremes(df: pd.DataFrame, col: str = TARGET_COL, prefix: st
     df[f"{prefix}_rolling_min_{ROLLING_WINDOWS[0]}h"] = df[col].rolling(ROLLING_WINDOWS[0]).min()
     return df
 
-
 MULTI_HORIZON_ROLLING_HOURS = [48, 72]  # matches the 48h/72h forecast horizons directly
-
 
 def add_long_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
     """Rolling means for AQI and its two most predictive pollutants at
@@ -445,11 +370,7 @@ def add_long_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
     slower-moving background trend. The existing 24h rolling window
     captures short-term trend well but has mostly decayed out by 48-72h
     ahead -- these give the longer-horizon models trend signal that's
-    still informative that far out.
-
-    NaNs only appear in the first `window` rows (warm-up) -- the largest
-    window (168h) is added to EDGE_SENSITIVE_COLS, which covers the
-    shorter 48h/72h windows' warm-up rows too since they resolve earlier."""
+    still informative that far out."""
     for window in MULTI_HORIZON_ROLLING_HOURS:
         df[f"aqi_rolling_mean_{window}h"] = df[TARGET_COL].rolling(window).mean()
     for window in MULTI_HORIZON_ROLLING_HOURS + [LONG_ROLLING_WINDOW_HOURS]:
@@ -459,7 +380,6 @@ def add_long_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
         df[TARGET_COL].rolling(LONG_ROLLING_WINDOW_HOURS).mean()
     )
     return df
-
 
 def add_weather_tendency_features(df: pd.DataFrame) -> pd.DataFrame:
     """Short-term rate of change, not just level -- falling pressure often
@@ -471,21 +391,16 @@ def add_weather_tendency_features(df: pd.DataFrame) -> pd.DataFrame:
     df["temperature_2m_change_3h"] = df["temperature_2m"].diff(3)
     return df
 
-
 def add_upwind_feature(df: pd.DataFrame, bearings: dict = UPWIND_BEARINGS) -> pd.DataFrame:
     """Blends the per-bearing upwind AQI/PM2.5 points (already merged into
     df as pm2_5_dir_{name}/us_aqi_dir_{name} columns during fetch) into a
     single wind-direction-weighted 'what's approaching' feature.
-
     wind_direction_10m is meteorological convention: the direction the wind
     is blowing FROM. So the fixed point whose bearing from the city best
     matches the CURRENT wind direction is the most "upwind" one right now
     -- weight it highest. A calm/zero wind produces near-equal weights
     across all bearings (no directional information available), handled by
-    the epsilon-padded normalization below.
-
-    Must run before add_cyclical_features() drops the raw wind_direction_10m
-    column, same constraint as the (now-removed) future-weather features."""
+    the epsilon-padded normalization below."""
     wind_dir_rad = np.radians(df["wind_direction_10m"])
     weights = {}
     for name, bearing in bearings.items():
@@ -501,7 +416,6 @@ def add_upwind_feature(df: pd.DataFrame, bearings: dict = UPWIND_BEARINGS) -> pd
     )
     return df
 
-
 def add_forecast_targets(df: pd.DataFrame, col: str, horizons_hours=FORECAST_HORIZONS) -> pd.DataFrame:
     for h in horizons_hours:
         df[f"target_{col}_{h}h_ahead"] = df[col].shift(-h)
@@ -512,11 +426,9 @@ WIND_DIR_COLS_TO_ENCODE = ["wind_direction_10m"] + [
     f"wind_direction_10m_future_{h}h" for h in FORECAST_HORIZONS
 ]
 
-
 def add_cyclical_features(df: pd.DataFrame) -> pd.DataFrame:
     """Encodes periodic columns (hour-of-day, month-of-year, wind direction
     in degrees) as sin/cos pairs and drops the raw column.
-
     Raw integer/degree values misrepresent distance for anything that
     wraps around: hour 23 and hour 0 are ~23 apart numerically but 1 hour
     apart in reality -- same problem for Dec->Jan (month 12 vs 1) and wind
@@ -525,11 +437,6 @@ def add_cyclical_features(df: pd.DataFrame) -> pd.DataFrame:
     tree-based models (RF/XGBoost) split on thresholds and are largely
     unaffected, which is part of why they weren't visibly hurt by this
     before.
-
-    Must run AFTER add_future_weather_features(): that function reads the
-    *raw* wind_direction_10m column to build the future-horizon wind
-    direction columns, so encoding it first would leave nothing sensible
-    to shift.
     """
     for col, period in CYCLICAL_PERIODS.items():
         df[f"{col}_sin"] = np.sin(2 * np.pi * df[col] / period)
@@ -543,31 +450,11 @@ def add_cyclical_features(df: pd.DataFrame) -> pd.DataFrame:
             df = df.drop(columns=[col])
     return df
 
-
-# Cut from 92 -> 80 features based on real XGBoost feature_importances_
-# (averaged across all 3 horizons, computed via TimeSeriesSplit(3) CV on the
-# actual current feature set -- not guessed). Each of these 12 carried
-# <0.35% average importance individually, ~2.6% combined out of 100%, and
-# several (precipitation, is_rush_hour) were ~0.00-0.02% -- functionally
-# zero signal. Verified this isn't just "harmless clutter": a head-to-head
-# CV RMSE comparison (same data, same search budget, full-92 vs
-# trimmed-80) showed the trimmed set winning at EVERY horizon:
-#   24h: 16.487 -> 16.453   48h: 23.524 -> 23.488   72h: 27.745 -> 27.669
-# Small margins, but consistent in the same direction across all 3 -- this
-# is redundant/noisy input diluting the models, not features that don't
-# matter but also don't hurt.
-#
-# Note some of these (precipitation, temperature_2m, relative_humidity_2m,
-# wind_speed_10m) are still fetched and used as INPUTS to other features
-# that scored well (e.g. precipitation -> precipitation_rolling_sum_24h/72h,
-# temperature_2m -> temperature_2m_change_3h) -- only the raw instantaneous
-# reading itself is being dropped here, not the underlying data.
 LOW_VALUE_FEATURES = [
     "precipitation", "is_rush_hour", "temperature_2m", "pressure_msl_change_3h",
     "ozone_lag_48h", "co_lag_24h", "wind_speed_10m", "ozone_lag_72h",
     "relative_humidity_2m", "pm25_change_rate_1h", "ozone_lag_24h", "hour_cos",
 ]
-
 
 def drop_low_value_features(df: pd.DataFrame) -> pd.DataFrame:
     present = [c for c in LOW_VALUE_FEATURES if c in df.columns]
@@ -576,16 +463,11 @@ def drop_low_value_features(df: pd.DataFrame) -> pd.DataFrame:
         print(f"  Dropped {len(present)} low-value features (verified via CV, see LOW_VALUE_FEATURES): {present}")
     return df
 
-
-# ==================================================================
-# 4. HOPSWORKS: UPLOAD + VERIFY
-# ==================================================================
-
+# HOPSWORKS: UPLOAD + VERIFY
 def delete_existing_csv(path: str):
     if os.path.exists(path):
         os.remove(path)
         print(f"Deleted existing {path} before writing the new one")
-
 
 def get_hopsworks_feature_store():
     api_key = os.environ.get("HOPSWORKS_API_KEY")
@@ -597,7 +479,6 @@ def get_hopsworks_feature_store():
     print("Logging into Hopsworks...")
     project = hopsworks.login(api_key_value=api_key)
     return project.get_feature_store()
-
 
 def delete_existing_feature_views(fs, city: str):
     """Feature Views must be deleted BEFORE their underlying feature group --
@@ -617,7 +498,6 @@ def delete_existing_feature_views(fs, city: str):
     else:
         print("No existing feature views to delete.")
 
-
 def delete_existing_feature_group(fs, city: str, version: int = 1):
     """Deletes the existing feature group (if any) before this run recreates
     it -- keeps version locked at 1 instead of accumulating versions or
@@ -627,7 +507,6 @@ def delete_existing_feature_group(fs, city: str, version: int = 1):
     except Exception:
         print(f"No existing feature group 'aqi_features_{city}' v{version} found -- nothing to delete")
         return
-
     try:
         print(f"Found existing feature group 'aqi_features_{city}' v{version}, deleting...")
         fg.delete()
@@ -639,24 +518,15 @@ def delete_existing_feature_group(fs, city: str, version: int = 1):
         print("The run will continue, but data may get upserted into the "
               "existing group instead of a clean rebuild.")
 
-
 def upload_to_hopsworks(fs, df: pd.DataFrame, city: str, version: int = 1):
     df = df.copy()
     df.columns = [c.lower().replace(" ", "_") for c in df.columns]
-
-    # Hopsworks locks in column types from the first insert. pandas defaults
-    # whole-number columns to int64, which mismatches a schema created
-    # expecting 32-bit int -- cast explicitly to avoid a schema conflict.
-    # (hour/month no longer exist as raw ints -- they're sin/cos pairs now.)
     for col in ["day"]:
         if col in df.columns:
             df[col] = df[col].astype("int32")
 
-    # Feature Views must go first -- they depend on the feature group and
-    # block its deletion otherwise.
     delete_existing_feature_views(fs, city)
     delete_existing_feature_group(fs, city, version)
-
     fg = fs.get_or_create_feature_group(
         name=f"aqi_features_{city}",
         version=version,
@@ -666,11 +536,9 @@ def upload_to_hopsworks(fs, df: pd.DataFrame, city: str, version: int = 1):
         online_enabled=True,
         time_travel_format="HUDI",
     )
-
     print(f"Inserting {len(df):,} rows into feature group 'aqi_features_{city}' v{version}...")
     fg.insert(df)
     return version
-
 
 def verify_upload(fs, city: str, version: int, expected_rows: int,
                    max_wait_seconds: int = 600, initial_wait_seconds: int = 45):
@@ -678,15 +546,12 @@ def verify_upload(fs, city: str, version: int, expected_rows: int,
     and verify. Reading too early raises a 'no Hudi commits found' error
     even though the upload succeeded -- expected, not a real failure."""
     fg = fs.get_feature_group(f"aqi_features_{city}", version=version)
-
     print(f"Giving materialization a {initial_wait_seconds}s head start before checking...")
     time.sleep(initial_wait_seconds)
-
     waited = initial_wait_seconds
     poll_interval = 20
     not_ready_markers = ("hudi properties", "no data has been written",
                           "hudi commits", "query service")
-
     while waited < max_wait_seconds:
         try:
             df_check = fg.read()
@@ -711,16 +576,8 @@ def verify_upload(fs, city: str, version: int, expected_rows: int,
         print(f"MISMATCH: uploaded {expected_rows:,} rows but read back {len(df_check):,}")
     return df_check
 
-
-# ==================================================================
-# 5. TRAIN / TEST SPLIT
-# ==================================================================
-
+# TRAIN/TEST SPLIT
 def prepare_for_split(df: pd.DataFrame) -> pd.DataFrame:
-    """Drops rows without full lag/target history -- can't train or
-    evaluate on rows missing the very thing they need. This is a
-    modeling-readiness trim, separate from the general data-quality
-    cleaning done earlier in the pipeline."""
     df = df.sort_values("datetime").reset_index(drop=True)
     before = len(df)
     df_clean = df.dropna(subset=EDGE_SENSITIVE_COLS).reset_index(drop=True)
@@ -728,20 +585,11 @@ def prepare_for_split(df: pd.DataFrame) -> pd.DataFrame:
           f"history -- {len(df_clean):,} rows usable for training/evaluation")
     return df_clean
 
-
 def compute_split_boundaries(df: pd.DataFrame) -> dict:
-    """Two-way split: train (everything but the most recent 12 months) +
-    test (a full, calendar-anchored 12-month window). No separate val --
-    model selection happens via internal TimeSeriesSplit CV during
-    hyperparameter tuning in train_models.py, so there's no need to carve
-    out a second held-out block whose seasonal composition would otherwise
-    need to match test's. This keeps train at ~75% instead of ~50%."""
     last_date = df["datetime"].iloc[-1]
     test_start = last_date - pd.DateOffset(months=12) + pd.Timedelta(hours=1)
-
     train_mask = df["datetime"] < test_start
     test_mask = df["datetime"] >= test_start
-
     bounds = {
         "train_start": df.loc[train_mask, "datetime"].iloc[0],
         "train_end": df.loc[train_mask, "datetime"].iloc[-1],
@@ -754,12 +602,10 @@ def compute_split_boundaries(df: pd.DataFrame) -> dict:
     print(f"  Test:  {bounds['test_start']} -> {bounds['test_end']}  ({n_test:,} rows, {n_test/n:.0%})")
     return bounds
 
-
 def save_local_split_csvs(df: pd.DataFrame, bounds: dict):
     """Local-only fallback, used ONLY when --skip-hopsworks is set."""
     train_df = df[(df["datetime"] >= bounds["train_start"]) & (df["datetime"] <= bounds["train_end"])]
     test_df = df[(df["datetime"] >= bounds["test_start"]) & (df["datetime"] <= bounds["test_end"])]
-
     for name, part in [("train.csv", train_df), ("test.csv", test_df)]:
         delete_existing_csv(name)
         part.to_csv(name, index=False)
@@ -767,23 +613,19 @@ def save_local_split_csvs(df: pd.DataFrame, bounds: dict):
     print(f"\nSaved local split CSVs: train.csv ({len(train_df):,} rows), test.csv ({len(test_df):,} rows)")
     return train_df, test_df
 
-
 def fetch_split_from_hopsworks(fv, training_dataset_version: int = 1):
     print("\nFetching the actual split data back from Hopsworks (single source of truth)...")
     X_train, X_test, y_train, y_test = fv.get_train_test_split(
         training_dataset_version=training_dataset_version
     )
-
     train_df = pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
     test_df = pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1)
-
     for name, part in [("train", train_df), ("test", test_df)]:
         if "datetime" not in part.columns:
             raise KeyError(f"'datetime' missing from {name} split.")
 
     train_df = train_df.sort_values("datetime").reset_index(drop=True)
     test_df = test_df.sort_values("datetime").reset_index(drop=True)
-
     for name, part in [("train.csv", train_df), ("test.csv", test_df)]:
         delete_existing_csv(name)
         part.to_csv(name, index=False)
@@ -792,11 +634,9 @@ def fetch_split_from_hopsworks(fv, training_dataset_version: int = 1):
           f"train.csv ({len(train_df):,} rows), test.csv ({len(test_df):,} rows)")
     return train_df, test_df
 
-
 def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, version: int = 1):
     fg = fs.get_feature_group(f"aqi_features_{city}", version=version)
     query = fg.select(df.columns.tolist())
-
     fv = fs.get_or_create_feature_view(
         name=f"aqi_fv_{city}",
         version=version,
@@ -805,25 +645,6 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
         description=f"3-day-ahead AQI forecasting feature view for {city}",
     )
 
-    # Delete any existing training-dataset version(s) under this Feature
-    # View before creating a new split -- we don't want v1, v2, v3, ...
-    # piling up in Hopsworks storage every time this runs (daily via
-    # refresh_training_split.py, or on manual re-runs). Hopsworks assigns
-    # the training-dataset version number itself; deleting everything
-    # first before creating a new split means the new one lands back at
-    # version 1 whenever nothing else remains. That reuse isn't a
-    # documented API guarantee though, so downstream code (see
-    # refresh_training_split.py) reads back whatever version Hopsworks
-    # actually assigned rather than assuming it's 1.
-    # NOTE: deletion is a method on the Feature View (fv.delete_training_dataset(...)
-    # / fv.delete_all_training_datasets()), NOT on the objects returned by
-    # fv.get_training_datasets() -- those are metadata-only and calling
-    # .delete() directly on them raises "'super' object has no attribute
-    # 'delete'" on this hsfs version. delete_all_training_datasets() is the
-    # primary path since it matches the intent exactly (wipe everything
-    # before creating the new split); per-version delete_training_dataset()
-    # is kept as a fallback for hsfs versions that don't expose the
-    # all-at-once call.
     try:
         fv.delete_all_training_datasets()
         print("  Deleted all existing training dataset(s) via delete_all_training_datasets().")
@@ -845,14 +666,6 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
               f"Training Datasets) and this hsfs version's delete API.")
 
     print("\nCreating train/test split in Hopsworks (event-time based, no separate val)...")
-    # statistics_config=False: skip Hopsworks' post-write statistics
-    # computation for this training dataset. That step is a separate HTTP
-    # call after the actual split data has already been written, has been
-    # seen to fail with a transient backend metadata-transaction error
-    # (RonDB/NDB lock contention -- "Transaction marked for rollback")
-    # unrelated to whether the split itself succeeded, and train_models.py
-    # reads the split's CSV files directly rather than relying on
-    # Hopsworks-computed statistics, so there's nothing lost by skipping it.
     fv.create_train_test_split(
         train_start=bounds["train_start"],
         train_end=bounds["train_end"],
@@ -864,10 +677,6 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
     )
     print(f"Feature View 'aqi_fv_{city}' v{version} created with the split registered.")
     return fv
-
-# ==================================================================
-# MAIN
-# ==================================================================
 
 def main():
     parser = argparse.ArgumentParser()
@@ -893,22 +702,19 @@ def main():
                          help="Seconds to wait before the first read-back attempt")
     args = parser.parse_args()
 
-    # --- Automatic date range: today going back N years ---
+    # Automatic date range: today going back N years
     end_date = datetime.today().strftime("%Y-%m-%d")
     start_date = (datetime.today() - timedelta(days=365 * args.years_back)).strftime("%Y-%m-%d")
     print(f"Date range: {start_date} -> {end_date} ({args.years_back} years back from today)")
-
     if args.lat is not None and args.lon is not None:
         lat, lon = args.lat, args.lon
     else:
         lat, lon = geocode_city(args.city)
 
-    # --- 1. Fetch (Feature Pipeline requirement: raw weather + pollutant data) ---
+    # Fetch (Feature Pipeline requirement: raw weather + pollutant data)
     weather_df = fetch_weather(lat, lon, start_date, end_date)
     aq_df = fetch_air_quality(lat, lon, start_date, end_date)
-
     df = pd.merge(weather_df, aq_df, on="time", how="inner")
-
     upwind_cols = []
     if not args.skip_upwind:
         upwind_df = fetch_upwind_air_quality(lat, lon, start_date, end_date)
@@ -923,11 +729,10 @@ def main():
     df = df.sort_values("datetime").reset_index(drop=True)
     print(f"Fetched and merged {len(df):,} raw rows")
 
-    # --- 2. Clean ---
+    # Clean 
     df = clean_dataset(df, extra_numeric_cols=upwind_cols)
 
-    # --- 3. Feature engineering (Feature Pipeline requirement: time-based +
-    # derived features like AQI change rate) ---
+    # Feature engineering (Feature Pipeline requirement: time-based + derived features like AQI change rate)
     df = add_time_features(df)
     df = add_aqi_features(df)
     df = add_aqi_acceleration_feature(df)
@@ -942,13 +747,10 @@ def main():
     df = add_calendar_features(df)
     if not args.skip_upwind:
         df = add_upwind_feature(df)
-    # df = add_future_weather_features(df, horizons_hours=FORECAST_HORIZONS)
     df = add_forecast_targets(df, TARGET_COL, horizons_hours=FORECAST_HORIZONS)
     df = add_cyclical_features(df)
     df = drop_low_value_features(df)
     print(f"Feature engineering done: {df.shape[0]:,} rows x {df.shape[1]} columns")
-
-    # --- Save ONE combined CSV: raw + engineered columns together ---
     delete_existing_csv(args.out)
     df.to_csv(args.out, index=False)
     print(f"Saved combined raw+features CSV to {args.out}")
@@ -962,12 +764,11 @@ def main():
         save_local_split_csvs(df_for_split, bounds)
         return
 
-    # --- 4. Store in Feature Store (Feature Pipeline requirement) ---
+    # Store in Feature Store (Feature Pipeline requirement)
     fs = get_hopsworks_feature_store()
     version = upload_to_hopsworks(fs, df, city_key, args.version)
 
-    # --- 5. Verify (Historical Data Backfill requirement: confirm the
-    # feature pipeline actually produced usable training data) ---
+    # Verify (Historical Data Backfill requirement:confirm feature pipeline actually produced usable training data)
     df_check = verify_upload(fs, city_key, version, expected_rows=len(df),
                               max_wait_seconds=args.max_wait,
                               initial_wait_seconds=args.initial_wait)
@@ -976,11 +777,9 @@ def main():
               "again later once the Hopsworks job finishes.")
         return
 
-    # --- 6. Comprehensive dataset for training and evaluation
-    # (Historical Data Backfill requirement) ---
+    # Historical Data Backfill requirement
     df_for_split = prepare_for_split(df_check)
     bounds = compute_split_boundaries(df_for_split)  # still needed: tells
-    # Hopsworks exactly where to cut for a 70/15/15 ratio
 
     if args.skip_feature_view:
         print("Skipping Feature View creation (--skip-feature-view was set) "
@@ -989,10 +788,7 @@ def main():
         return
 
     fv = create_feature_view_split(fs, df_for_split, city_key, bounds, version=args.version)
-    # Pull the actual split back from Hopsworks rather than re-deriving it
-    # locally -- Hopsworks is the single source of truth for the split.
     fetch_split_from_hopsworks(fv, training_dataset_version=1)
-
 
 if __name__ == "__main__":
     main()
