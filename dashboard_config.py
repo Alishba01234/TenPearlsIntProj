@@ -20,11 +20,9 @@ LOCAL_FEATURES_CSV = "aqi_features.csv"   # already produced by aqiPipeline.py, 
 MODEL_CACHE_DIR = "registry_cache"        # NEW folder for downloaded registry models --
                                            # separate from your existing model_aqi_karachi_*h folders
 
-import os
-
-API_HOST = os.environ.get("API_HOST", "127.0.0.1")
-API_PORT = int(os.environ.get("API_PORT", "8000"))
-API_BASE_URL = os.environ.get("API_BASE_URL", f"http://{API_HOST}:{API_PORT}")
+API_HOST = "127.0.0.1"
+API_PORT = 8000
+API_BASE_URL = f"http://{API_HOST}:{API_PORT}"
 
 # --- US EPA AQI breakpoints (matches the us_aqi scale from Open-Meteo) ---
 AQI_BREAKPOINTS = [
