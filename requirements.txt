@@ -23,9 +23,10 @@ fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
-hopsworks
-hsfs
-hsml
+hopsworks==5.0.4
+hsfs==3.7.9
+hsml==3.7.2
+great-expectations
 scikit-learn
 xgboost
 shap
