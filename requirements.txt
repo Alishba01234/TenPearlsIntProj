@@ -1,5 +1,5 @@
 numpy>=1.26,<2
-pandas<2.2
+pandas
 requests
 # dotenv
 pyarrow
@@ -23,9 +23,9 @@ fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
-hopsworks==4.4.4
-hsfs==3.7.9
-hsml==3.7.2
+hopsworks
+hsfs
+hsml
 great-expectations
 scikit-learn
 xgboost
