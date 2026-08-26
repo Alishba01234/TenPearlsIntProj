@@ -1,14 +1,9 @@
-"""
-api_backend.py
-FastAPI backend for the AQI dashboard.
+# FastAPI backend for the AQI dashboard.
+# uvicorn api_backend:app --reload --port 8000
 
-Run with:
-    uvicorn api_backend:app --reload --port 8000
-"""
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-
 import eda_utils
 import model_service
 import shap_utils
@@ -24,11 +19,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/health")
 def health():
     return {"status": "ok", "city": CITY}
-
 
 @app.get("/predict")
 def predict(force_refresh: bool = False):
@@ -47,12 +40,10 @@ def predict(force_refresh: bool = False):
     result["alerts"] = build_alerts(flat_predictions)
     return result
 
-
 @app.get("/eda/summary")
 def eda_summary():
     df = eda_utils.load_eda_dataframe()
     return eda_utils.summary_stats(df)
-
 
 @app.get("/eda/trend")
 def eda_trend():
@@ -60,7 +51,6 @@ def eda_trend():
     daily = df.set_index("datetime")[TARGET_COL].resample("D").mean().reset_index()
     daily["datetime"] = daily["datetime"].astype(str)
     return daily.to_dict(orient="records")
-
 
 @app.get("/eda/hourly")
 def eda_hourly():
@@ -70,7 +60,6 @@ def eda_hourly():
     hourly = df.groupby("hour")[TARGET_COL].mean().reset_index()
     return hourly.to_dict(orient="records")
 
-
 @app.get("/eda/monthly")
 def eda_monthly():
     df = eda_utils.load_eda_dataframe()
@@ -79,12 +68,10 @@ def eda_monthly():
     monthly = df.groupby("month")[TARGET_COL].agg(["mean", "min", "max"]).reset_index()
     return monthly.to_dict(orient="records")
 
-
 @app.get("/shap/{horizon}")
 def shap_explanation(horizon: int):
     if horizon not in FORECAST_HORIZONS:
         raise HTTPException(status_code=400, detail=f"horizon must be one of {FORECAST_HORIZONS}")
-
     try:
         _, fs, mr = model_service.get_hopsworks()
         bundle = model_service.load_model_for_horizon(mr, horizon)
