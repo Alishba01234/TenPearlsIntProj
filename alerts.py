@@ -1,14 +1,9 @@
-"""
-alerts.py
-AQI classification (US EPA scale) and hazardous-level alert generation.
-"""
+# AQI classification (US EPA scale) and hazardous-level alert generation.
 import math
-
 from dashboard_config import AQI_BREAKPOINTS, ALERT_THRESHOLD, SEVERE_ALERT_THRESHOLD
 
-
 def classify_aqi(value) -> dict:
-    """Maps a numeric AQI value to its EPA category, color, and health message."""
+    # Maps a numeric AQI value to its EPA category, color, and health message.
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return {"category": "Unknown", "color": "#9e9e9e", "message": "No data available.", "value": None}
 
