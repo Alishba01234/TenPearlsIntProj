@@ -1,63 +1,63 @@
-# name: Hourly Feature Pipeline
+name: Hourly Feature Pipeline
 
-# # Runs hourly_feature_update.py every hour: fetches only the newest hour(s)
-# # of data, appends them to the Hopsworks Feature Store, and prunes rows
-# # older than the 4-year retention window (both in Hopsworks and in the
-# # committed aqi_features.csv).
+# Runs hourly_feature_update.py every hour: fetches only the newest hour(s)
+# of data, appends them to the Hopsworks Feature Store, and prunes rows
+# older than the 4-year retention window (both in Hopsworks and in the
+# committed aqi_features.csv).
 
-# on:
-#   schedule:
-#     - cron: "5 * * * *"   # 5 minutes past every hour (UTC) -- small offset
-#                             # so it isn't fighting every other repo's
-#                             # on-the-hour jobs for GitHub's shared runners
-#   workflow_dispatch: {}    # lets you trigger it manually from the Actions tab
+on:
+  schedule:
+    - cron: "5 * * * *"   # 5 minutes past every hour (UTC) -- small offset
+                            # so it isn't fighting every other repo's
+                            # on-the-hour jobs for GitHub's shared runners
+  workflow_dispatch: {}    # lets you trigger it manually from the Actions tab
 
-# permissions:
-#   contents: write   # needed to commit the updated aqi_features.csv back
+permissions:
+  contents: write   # needed to commit the updated aqi_features.csv back
 
-# jobs:
-#   update-features:
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 20
-#     steps:
-#       - name: Check out repo
-#         uses: actions/checkout@v4
+jobs:
+  update-features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
 
-#       - name: Set up Python
-#         uses: actions/setup-python@v5
-#         with:
-#           python-version: "3.10"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
-#       - name: Install dependencies
-#         run: |
-#           python -m pip install --upgrade pip
-#           pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-#       - name: Run hourly feature update
-#         env:
-#           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
-#         run: python hourly_feature_update.py --city "Karachi"
+      - name: Run hourly feature update
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: python hourly_feature_update.py --city "Karachi"
 
-#       - name: Commit updated aqi_features.csv (if changed)
-#         run: |
-#           git config user.name "github-actions[bot]"
-#           git config user.email "github-actions[bot]@users.noreply.github.com"
-#           git add aqi_features.csv
-#           git diff --staged --quiet || git commit -m "Hourly feature update [skip ci]"
-#           # Running hourly_feature_update.py (which imports aqiPipeline.py)
-#           # can leave OTHER tracked files touched as a side effect --
-#           # commonly regenerated __pycache__/*.pyc bytecode -- that we
-#           # never intended to commit. "git pull --rebase" refuses to run
-#           # at all if ANY tracked file has unstaged changes, even ones
-#           # totally unrelated to aqi_features.csv, so discard anything we
-#           # didn't deliberately stage and commit above before rebasing.
-#           git checkout -- .
-#           # Same race the daily training workflow can hit: if another run
-#           # of this workflow (e.g. a manual workflow_dispatch overlapping
-#           # the scheduled hourly run) or the daily training job pushed to
-#           # main while this run was in progress, a plain "git push" would
-#           # get rejected as a non-fast-forward. Rebase onto whatever's
-#           # newest before pushing -- safe here since this job only ever
-#           # touches aqi_features.csv, which the daily job never writes to.
-#           git pull --rebase origin main
-#           git push
+      - name: Commit updated aqi_features.csv (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add aqi_features.csv
+          git diff --staged --quiet || git commit -m "Hourly feature update [skip ci]"
+          # Running hourly_feature_update.py (which imports aqiPipeline.py)
+          # can leave OTHER tracked files touched as a side effect --
+          # commonly regenerated __pycache__/*.pyc bytecode -- that we
+          # never intended to commit. "git pull --rebase" refuses to run
+          # at all if ANY tracked file has unstaged changes, even ones
+          # totally unrelated to aqi_features.csv, so discard anything we
+          # didn't deliberately stage and commit above before rebasing.
+          git checkout -- .
+          # Same race the daily training workflow can hit: if another run
+          # of this workflow (e.g. a manual workflow_dispatch overlapping
+          # the scheduled hourly run) or the daily training job pushed to
+          # main while this run was in progress, a plain "git push" would
+          # get rejected as a non-fast-forward. Rebase onto whatever's
+          # newest before pushing -- safe here since this job only ever
+          # touches aqi_features.csv, which the daily job never writes to.
+          git pull --rebase origin main
+          git push
