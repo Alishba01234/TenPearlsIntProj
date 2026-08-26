@@ -35,7 +35,6 @@ from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 from hopsworks_read_utils import robust_train_test_split
-import os
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 try:
     import tensorflow as tf
