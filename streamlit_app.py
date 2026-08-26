@@ -27,15 +27,6 @@ def _ensure_backend(host="127.0.0.1", port=8000):
 
 _ensure_backend()
 
-"""
-streamlit_app.py
-Interactive AQI forecasting dashboard.
-
-Run with:
-    streamlit run streamlit_app.py
-Requires api_backend.py to be running first:
-    uvicorn api_backend:app --reload --port 8000
-"""
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
