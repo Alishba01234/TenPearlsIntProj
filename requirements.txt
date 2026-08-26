@@ -2,6 +2,7 @@ numpy>=1.26,<2
 pandas
 requests
 # dotenv
+protobuf>=3.20.3,<5
 pyarrow
 fastavro>=1.9.7
 confluent-kafka
