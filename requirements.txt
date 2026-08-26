@@ -11,7 +11,7 @@ wheel
 # scikit-learn
 # xgboost
 joblib
-tensorflow
+tensorflow-cpu
 mlflow
 python-dateutil
 holidays
