@@ -1,33 +1,20 @@
-pandas
-requests
-# dotenv
-hopsworks
-pyarrow
-confluent-kafka
-setuptools
-wheel
-# conda-forge
-# twofish
-# scikit-learn
-# xgboost
-joblib
-tensorflow
-mlflow
-python-dateutil
-holidays
-matplotlib
-seaborn
-python-dotenv
 fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
-hsfs
-hsml
+pandas
 numpy
+python-dotenv
+requests
+streamlit
+plotly
 scikit-learn
 xgboost
 shap
-nest_asyncio
-plotly
-statsmodels
+joblib
+python-dateutil
+pyarrow
+holidays
+hopsworks
+hsfs
+hsml
