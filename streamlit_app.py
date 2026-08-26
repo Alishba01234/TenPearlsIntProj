@@ -1,3 +1,32 @@
+import os
+import socket
+import subprocess
+import sys
+import time
+
+import streamlit as st
+
+def _ensure_backend(host="127.0.0.1", port=8000):
+    # Streamlit Cloud's secrets manager (st.secrets) doesn't auto-populate
+    # os.environ, so mirror what the backend subprocess needs before spawning it.
+    for key in ("HOPSWORKS_API_KEY", "HOPSWORKS_HOST", "HOPSWORKS_PROJECT"):
+        if key in st.secrets:
+            os.environ[key] = str(st.secrets[key])
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex((host, port)) == 0:
+            return  # backend already running
+    subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "api_backend:app", "--host", host, "--port", str(port)]
+    )
+    for _ in range(30):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex((host, port)) == 0:
+                return
+        time.sleep(0.5)
+
+_ensure_backend()
+
 """
 streamlit_app.py
 Interactive AQI forecasting dashboard.
