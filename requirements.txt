@@ -23,7 +23,7 @@ fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
-hopsworks==5.0.4
+hopsworks==4.4.4
 hsfs==3.7.9
 hsml==3.7.2
 great-expectations
