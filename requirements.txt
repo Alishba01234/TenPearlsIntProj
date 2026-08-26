@@ -1,4 +1,5 @@
-pandas
+numpy>=1.26,<2
+pandas>=2.2,<3
 requests
 # dotenv
 pyarrow
@@ -25,7 +26,6 @@ pydantic-settings
 hopsworks
 hsfs
 hsml
-numpy
 scikit-learn
 xgboost
 shap
