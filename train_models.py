@@ -1,6 +1,5 @@
 """
 Training pipeline for AQI forecasting.
-
   1. Fetches the train/validation/test split directly from the Hopsworks
      Feature Store (the Feature View created by aqi_pipeline.py).
   2. Trains 3 candidate models (Ridge Regression, Random Forest, XGBoost)
@@ -11,7 +10,6 @@ Training pipeline for AQI forecasting.
      final unbiased performance on the held-out test set.
   5. Registers the 3 winning models (one per horizon) in the Hopsworks
      Model Registry.
-
 Why scikit-learn/XGBoost and not TensorFlow/PyTorch here: a genuinely
 serverless deployment (Lambda-style functions) typically caps deployment
 package size well below what a full TensorFlow/PyTorch install needs.
@@ -19,18 +17,12 @@ These three are lightweight, serverless-friendly, and still give a fair
 statistical-vs-ensemble-vs-gradient-boosting comparison. A deep learning
 model can be added later as an additional candidate without changing this
 script's structure.
-
-Prerequisites:
-    pip install hopsworks pandas numpy scikit-learn xgboost joblib python-dotenv
-
 Usage:
     python train_models.py --city karachi
 """
-
 import argparse
 import logging
 import os
-
 import hopsworks
 import joblib
 import numpy as np
@@ -42,33 +34,18 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
-
 from hopsworks_read_utils import robust_train_test_split
-
 try:
     import tensorflow as tf
     from tensorflow.keras import layers, callbacks
     TENSORFLOW_AVAILABLE = True
 except Exception as e:
-    # Deliberately catching Exception, not just ImportError: a broken /
-    # version-mismatched tensorflow install (e.g. a numpy/protobuf ABI
-    # conflict from installing tensorflow as a second, separate pip step
-    # after requirements.txt already pinned those shared deps) can raise
-    # things other than a plain ImportError -- ValueError and RuntimeError
-    # from native-extension loading are both common. A narrower except
-    # would let those crash the whole script instead of degrading
-    # gracefully to "skip the neural network candidate", and either way we
-    # want the REAL reason printed, not a generic "not installed" message
-    # that's often not what's actually wrong (it's frequently installed,
-    # just broken).
     TENSORFLOW_AVAILABLE = False
     print(f"WARNING: tensorflow import failed -- neural network candidate will "
           f"be skipped. Underlying error ({type(e).__name__}): {e}")
 
-
 class KerasWrapper:
     """Wraps a Keras model so it can be used like the other estimators.
-
     This wrapper exposes a predict method and keeps the raw Keras model
     available for saving in the registry.
     """
@@ -81,22 +58,16 @@ class KerasWrapper:
             return preds.ravel()
         return preds
 
-
 load_dotenv()
 
 logging.getLogger("hsfs").setLevel(logging.CRITICAL)
 logging.getLogger("hsml").setLevel(logging.CRITICAL)
 logging.getLogger("hopsworks").setLevel(logging.CRITICAL)
-
 FORECAST_HORIZONS = (24, 48, 72)
 TARGET_COL = "us_aqi"
 TARGET_COLS = [f"target_{TARGET_COL}_{h}h_ahead" for h in FORECAST_HORIZONS]
 
-
-# ==================================================================
-# 1. LOAD DATA FROM FEATURE STORE
-# ==================================================================
-
+# LOAD DATA FROM FEATURE STORE
 def connect_to_feature_store():
     api_key = os.environ.get("HOPSWORKS_API_KEY")
     if not api_key:
@@ -132,13 +103,8 @@ def load_splits(fs, city: str, fv_version: int = 1, td_version: int = 1):
     print(f"Train: {X_train.shape}, Test: {X_test.shape}")
     return X_train, X_test, y_train, y_test, train_datetimes, test_datetimes
 
-# ==================================================================
-# 2. MODELS
-# ==================================================================
-
 RANDOM_SEARCH_ITER = 15  # bounded to keep runtime reasonable
 CV_SPLITS = 3  # TimeSeriesSplit folds -- chronological, no shuffling
-
 
 def fit_tuned_ridge(X_train, y_train, sample_weight=None):
     """Switched from RidgeCV to RandomizedSearchCV so it exposes
@@ -177,12 +143,12 @@ def fit_tuned_random_forest(X_train, y_train, sample_weight=None):
     return search.best_estimator_, -search.best_score_
  
 def fit_tuned_xgboost(X_train, y_train, sample_weight=None):
-    # Widened depth (up to 10) and n_estimators (up to 800), added a
-    # slower learning rate option now that more estimators are available,
-    # and added L1/L2 regularization + min_child_weight -- the old grid
-    # had no regularization knobs at all, which biases XGBoost toward
-    # overfitting exactly the kind of noisy, long-horizon target where it
-    # was losing to Ridge.
+    """Widened depth (up to 10) and n_estimators (up to 800), added a
+    slower learning rate option now that more estimators are available,
+    and added L1/L2 regularization + min_child_weight -- the old grid
+    had no regularization knobs at all, which biases XGBoost toward
+    overfitting exactly the kind of noisy, long-horizon target where it
+    was losing to Ridge."""
     param_dist = {
         "n_estimators": [100, 200, 300, 400, 600, 800],
         "max_depth": [3, 4, 6, 8, 10],
@@ -230,24 +196,7 @@ def _fit_nn_once(X_fit_all, y_fit_all, seed: int, internal_val_frac: float = 0.1
               callbacks=[early_stop], verbose=0)
     return KerasWrapper(model)
 
-
 def fit_neural_net(X_train, y_train, seed: int = 42, sample_weight=None):
-    """CV score now comes from the SAME TimeSeriesSplit(3) scheme used by
-    Ridge/RF/XGBoost, not a single last-15%-of-train holdout -- the
-    previous version gave the NN an apples-to-oranges advantage in model
-    selection because its 'CV' slice was always the training data most
-    similar to the held-out test period, while the other three models were
-    scored on an average across earlier, less test-like folds too.
-
-    Concretely, this was causing worse models to get deployed: a fully
-    untuned default XGBoost beat the NN that 'won' on the old CV metric,
-    on true held-out test R2, at both 24h and 48h.
-
-    Each fold retrains a fresh NN (with its own internal early-stopping
-    carve-out from that fold's train portion) and is scored on the fold's
-    validation slice. The final returned model is then trained once more on
-    ALL of X_train/y_train -- CV is for scoring only, never for what gets
-    deployed."""
     X_arr = np.asarray(X_train)
     y_arr = np.asarray(y_train)
     w_arr = np.asarray(sample_weight) if sample_weight is not None else None
@@ -259,10 +208,8 @@ def fit_neural_net(X_train, y_train, seed: int = 42, sample_weight=None):
         fold_rmse = evaluate(y_arr[val_idx], fold_wrapper.predict(X_arr[val_idx]))["rmse"]
         fold_rmses.append(fold_rmse)
     cv_rmse = float(np.mean(fold_rmses))
-
     final_wrapper = _fit_nn_once(X_arr, y_arr, seed=seed, w_fit_all=w_arr)
     return final_wrapper, cv_rmse
-
 
 def get_model_fitters():
     """Returns {name: function(X_train, y_train) -> fitted model}. Each
@@ -274,21 +221,6 @@ def get_model_fitters():
         "xgboost": fit_tuned_xgboost,
     }
 
-# def scale_features(X_train, X_test):
-#     """Fits StandardScaler on TRAIN ONLY, applies the same transform to
-#     val/test -- fitting on the full dataset would leak validation/test
-#     distribution info into training. Returns scaled DataFrames (not raw
-#     numpy arrays) so column names survive for feature importance reporting."""
-#     scaler = StandardScaler()
-#     X_train_scaled = pd.DataFrame(
-#         scaler.fit_transform(X_train), columns=X_train.columns, index=X_train.index
-#     )
-#     X_test_scaled = pd.DataFrame(
-#         scaler.transform(X_test), columns=X_test.columns, index=X_test.index
-#     )
-#     return X_train_scaled, X_test_scaled, scaler
-
-
 def select_features_for_horizon(X: pd.DataFrame, horizon: int) -> pd.DataFrame:
     """Each horizon's model should only see weather aligned to ITS OWN
     target time -- e.g. the 24h model shouldn't get 48h/72h-future weather,
@@ -298,7 +230,6 @@ def select_features_for_horizon(X: pd.DataFrame, horizon: int) -> pd.DataFrame:
     other_horizons = [h for h in FORECAST_HORIZONS if h != horizon]
     drop_cols = [c for c in X.columns if any(f"_future_{oh}h" in c for oh in other_horizons)]
     return X.drop(columns=drop_cols)
-
 
 def report_feature_target_correlations(X_train, y_train, horizon: int, top_n: int = 10):
     """Direct evidence of how much genuine LINEAR signal exists between
@@ -310,13 +241,11 @@ def report_feature_target_correlations(X_train, y_train, horizon: int, top_n: in
     combined = X_h.copy()
     combined["__target__"] = y_train[target_col].values
     corrs = combined.corr()["__target__"].drop("__target__").abs().sort_values(ascending=False)
-
     print(f"  Top {top_n} feature-target correlations ({horizon}h ahead):")
     for feat, corr in corrs.head(top_n).items():
         marker = " <- future weather" if "_future_" in feat else ""
         print(f"    {feat:35s} {corr:.3f}{marker}")
     return corrs
-
 
 def evaluate(y_true, y_pred) -> dict:
     return {
@@ -324,7 +253,6 @@ def evaluate(y_true, y_pred) -> dict:
         "mae": float(mean_absolute_error(y_true, y_pred)),
         "r2": float(r2_score(y_true, y_pred)),
     }
-
 
 def persistence_baseline(X, y, horizon: int) -> dict:
     """The naive 'AQI doesn't change' forecast: predict the CURRENT us_aqi
@@ -335,7 +263,6 @@ def persistence_baseline(X, y, horizon: int) -> dict:
     target_col = f"target_{TARGET_COL}_{horizon}h_ahead"
     naive_pred = X["us_aqi"]
     return evaluate(y[target_col], naive_pred)
-
 
 def report_feature_importance(model, feature_names, model_name: str, top_n: int = 10):
     """Shows which features the winning model actually relied on -- the
@@ -355,43 +282,27 @@ def report_feature_importance(model, feature_names, model_name: str, top_n: int 
         marker = " <- future weather" if "_future_" in feature_names[idx] else ""
         print(f"    {feature_names[idx]:35s} {importances[idx]:.4f}{marker}")
 
-
-# ==================================================================
-# 3. TRAIN + EVALUATE PER HORIZON
-# ==================================================================
+# TRAIN + EVALUATE PER HORIZON
 OUTLIER_PERIOD_END = "2023-09-01"  # Aug 2022-Jun 2023 has ~250 extreme AQI
-OUTLIER_PERIOD_WEIGHT = 0.3        # hours (>200, up to 297) not seen since --
-                                    # tested at 1.0/0.3/0.1, 0.3 measured best
-                                    # (24h R2 0.662->0.670, 72h 0.239->0.280)
-
+OUTLIER_PERIOD_WEIGHT = 0.3        # hours (>200, up to 297) not seen since tested at 1.0/0.3/0.1, 0.3 measured best (24h R2 0.662->0.670, 72h 0.239->0.280)
 
 def train_for_horizon(horizon: int, X_train, y_train, X_test, y_test, train_datetimes=None):
     target_col = f"target_{TARGET_COL}_{horizon}h_ahead"
     X_train_h = select_features_for_horizon(X_train, horizon)
     X_test_h = select_features_for_horizon(X_test, horizon)
-
     baseline = persistence_baseline(X_test_h, y_test, horizon)
     print(f"  persistence baseline  RMSE={baseline['rmse']:.2f}  MAE={baseline['mae']:.2f}  R2={baseline['r2']:.3f}")
-
     sample_weight = None
     if train_datetimes is not None:
         sample_weight = np.where(
             pd.to_datetime(train_datetimes) < OUTLIER_PERIOD_END, OUTLIER_PERIOD_WEIGHT, 1.0
         )
-
     scaler = StandardScaler()
     X_train_h = pd.DataFrame(scaler.fit_transform(X_train_h), columns=X_train_h.columns, index=X_train_h.index)
     X_test_h = pd.DataFrame(scaler.transform(X_test_h), columns=X_test_h.columns, index=X_test_h.index)
-
     results = {}
     for name, fit_fn in get_model_fitters().items():
         model, cv_rmse = fit_fn(X_train_h, y_train[target_col], sample_weight=sample_weight)
-        # Evaluate EVERY candidate on the held-out test set here (cheap --
-        # just a predict + metrics calc, no retraining), not only the
-        # eventual winner. This is what lets register_all_candidates()
-        # register each algorithm with real test metrics instead of only
-        # a CV score, so the dashboard can show a genuine statistical vs.
-        # ensemble vs. deep-learning comparison later.
         test_metrics = evaluate(y_test[target_col], model.predict(X_test_h.values))
         results[name] = {"model": model, "cv_rmse": cv_rmse, "test_metrics": test_metrics}
         print(f"  {name:15s}  CV RMSE={cv_rmse:.2f}  Test RMSE={test_metrics['rmse']:.2f}  Test R2={test_metrics['r2']:.3f}")
@@ -407,35 +318,22 @@ def train_for_horizon(horizon: int, X_train, y_train, X_test, y_test, train_date
     best_name = min(results, key=lambda n: results[n]["cv_rmse"])
     best_model = results[best_name]["model"]
     test_metrics = results[best_name]["test_metrics"]
-
     print(f"  --> Best: {best_name} (CV RMSE={results[best_name]['cv_rmse']:.2f})")
     print(f"  --> Test: RMSE={test_metrics['rmse']:.2f}  MAE={test_metrics['mae']:.2f}  R2={test_metrics['r2']:.3f}")
     report_feature_importance(best_model, list(X_train_h.columns), best_name)
-
     return {"horizon": horizon, "best_model_name": best_name, "best_model": best_model,
             "scaler": scaler, "cv_rmse": results[best_name]["cv_rmse"],
             "test_metrics": test_metrics, "baseline_metrics": baseline,
             "feature_columns": list(X_train_h.columns),
             "all_candidates": results}
 
-# ==================================================================
-# 4. MODEL REGISTRY
-# ==================================================================
-
+# MODEL REGISTRY
 def delete_existing_model_versions(project, model_name: str):
     """Deletes any existing registered version(s) of this model before a
-    new one is created -- mr.python.create_model() auto-increments the
-    version every time it's called with the same name, so without this,
-    daily retraining would pile up aqi_{city}_{horizon}h v1, v2, v3, ...
-    in the Model Registry forever, the same accumulation problem
-    aqiPipeline.py's create_feature_view_split() guards against for
-    training-dataset splits. This lands the new model back at v1 whenever
-    nothing else remains.
-
-    Unlike the training-dataset delete in aqiPipeline.py, Model.delete()
-    in hsml IS a directly supported method on the objects returned by
-    get_models() -- no super()/MRO issue here -- but the delete is still
-    wrapped defensively so a Model Registry hiccup degrades to "a new
+    new one is created. Unlike the training-dataset delete in aqiPipeline.py, 
+    Model.delete() in hsml IS a directly supported method on the objects 
+    returned by get_models() -- no super()/MRO issue here -- but the delete 
+    is still wrapped defensively so a Model Registry hiccup degrades to a new
     version gets created alongside the old one" rather than crashing the
     whole training run and losing today's model entirely."""
     mr = project.get_model_registry()
@@ -457,7 +355,6 @@ def delete_existing_model_versions(project, model_name: str):
                   f"The new model will still be registered, but old versions may pile up -- "
                   f"check the Hopsworks UI (Model Registry) to clean up manually.")
 
-
 def register_model(project, result: dict, city: str, X_train: pd.DataFrame):
     """Saves the winning model for one horizon to the Hopsworks Model
     Registry, tagged with its test-set metrics. Any existing version(s)
@@ -466,14 +363,11 @@ def register_model(project, result: dict, city: str, X_train: pd.DataFrame):
     the training-dataset split in aqiPipeline.py."""
     from hsml.schema import Schema
     from hsml.model_schema import ModelSchema
-
     horizon = result["horizon"]
     model_name = f"aqi_{city}_{horizon}h"
     model_dir = f"model_{model_name}"
     os.makedirs(model_dir, exist_ok=True)
-
     delete_existing_model_versions(project, model_name)
-
     if isinstance(result["best_model"], KerasWrapper):
         # Keras models need their own save format, not joblib pickling.
         keras_path = os.path.join(model_dir, "keras_model.keras")
@@ -487,18 +381,11 @@ def register_model(project, result: dict, city: str, X_train: pd.DataFrame):
     # fed to the model, or predictions will be wrong (especially for Ridge).
     scaler_path = os.path.join(model_dir, "scaler.pkl")
     joblib.dump(result["scaler"], scaler_path)
-
     mr = project.get_model_registry()
-
-    # Use only the columns this specific horizon's model was trained on --
-    # NOT the full X_train, which still has other horizons' future-weather
-    # columns that this model never saw.
     X_sample = X_train[result["feature_columns"]].iloc[:1]
-
     input_schema = Schema(X_train[result["feature_columns"]])
     output_schema = Schema(pd.DataFrame({f"target_{TARGET_COL}_{horizon}h_ahead": [0.0]}))
     model_schema = ModelSchema(input_schema=input_schema, output_schema=output_schema)
-
     hops_model = mr.python.create_model(
         name=model_name,
         metrics=result["test_metrics"],
@@ -518,10 +405,6 @@ def register_model(project, result: dict, city: str, X_train: pd.DataFrame):
               f"run, or this hsml version doesn't reuse a freed version number. Check the "
               f"Hopsworks UI (Model Registry) for leftover old versions of '{model_name}'.")
 
-# ==================================================================
-# MAIN
-# ==================================================================
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--city", default="karachi")
@@ -533,7 +416,6 @@ def main():
     parser.add_argument("--skip-registry", action="store_true",
                          help="Train and evaluate only, skip registering models in Hopsworks")
     args = parser.parse_args()
-
     td_version = args.td_version
     if td_version is None:
         try:
@@ -548,7 +430,6 @@ def main():
     X_train, X_test, y_train, y_test, train_datetimes, test_datetimes = load_splits(
         fs, args.city, args.fv_version, td_version
     )
-
     results = []
     for horizon in FORECAST_HORIZONS:
         result = train_for_horizon(horizon, X_train, y_train, X_test, y_test, train_datetimes)
@@ -567,14 +448,12 @@ def main():
     print(summary.to_string(index=False))
     summary.to_csv("model_evaluation_summary.csv", index=False)
     print("Saved model_evaluation_summary.csv")
-
     if args.skip_registry:
         print("Skipping Model Registry upload (--skip-registry was set)")
         return
 
     for result in results:
         register_model(project, result, args.city, X_train)
-
 
 if __name__ == "__main__":
     main()
