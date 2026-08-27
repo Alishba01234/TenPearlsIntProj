@@ -1,17 +1,17 @@
+numpy<2,>=1.26
 pandas
 requests
-# dotenv
 hopsworks
+hsfs
+hsml
+great-expectations
 pyarrow
+fastavro>=1.9.7
 confluent-kafka
 setuptools
 wheel
-# conda-forge
-# twofish
-# scikit-learn
-# xgboost
 joblib
-tensorflow
+tensorflow-cpu
 mlflow
 python-dateutil
 holidays
@@ -22,9 +22,6 @@ fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
-hsfs
-hsml
-numpy
 scikit-learn
 xgboost
 shap
