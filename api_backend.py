@@ -9,6 +9,7 @@ import model_service
 import shap_utils
 from alerts import build_alerts, classify_aqi
 from dashboard_config import CITY, FORECAST_HORIZONS, TARGET_COL
+import traceback
 
 app = FastAPI(title="AQI Forecasting API", version="1.0")
 
@@ -30,6 +31,7 @@ def predict(force_refresh: bool = False):
     try:
         result = model_service.predict_next_3_days(force_refresh_models=force_refresh)
     except Exception as e:
+        traceback.print_exc()  # prints full traceback to the Streamlit Cloud logs
         raise HTTPException(status_code=500, detail=str(e))
 
     flat_predictions = {k: v["predicted_aqi"] for k, v in result["predictions"].items()}
