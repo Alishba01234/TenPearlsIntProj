@@ -16,6 +16,6 @@ python-dateutil
 pyarrow
 setuptools<81
 
-hopsworks
-hsfs
-hsml
+hopsworks==5.0.*
+hsfs==5.0.*
+hsml==5.0.*
