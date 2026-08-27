@@ -1,2 +1,0 @@
-librdkafka-dev
-build-essential
