@@ -1,28 +1,35 @@
+# Data Foundations
 pandas
-requests
-hopsworks
+numpy
 pyarrow
-confluent-kafka
-setuptools
-wheel
-joblib
-tensorflow-cpu
-mlflow
 python-dateutil
 holidays
+python-dotenv
+
+# Machine Learning Core
+scikit-learn
+xgboost
+joblib
+tensorflow-cpu==2.14.0
+shap
+statsmodels
+
+# Feature Store & Operations
+hopsworks
+hsfs
+hsml
+mlflow
+confluent-kafka
+
+# Visualization / Dashboard UI
 matplotlib
 seaborn
-python-dotenv
+plotly
+
+# Web / Async Elements
+requests
 fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
-hsfs
-hsml
-numpy
-scikit-learn
-xgboost
-shap
 nest_asyncio
-plotly
-statsmodels
