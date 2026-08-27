@@ -1,7 +1,6 @@
 pandas
 requests
 # dotenv
-hopsworks
 pyarrow
 confluent-kafka
 setuptools
@@ -22,8 +21,9 @@ fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
-hsfs
-hsml
+hopsworks==5.0.6
+hsfs==5.0.*
+hsml==5.0.*
 numpy
 scikit-learn
 xgboost
