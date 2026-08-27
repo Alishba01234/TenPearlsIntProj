@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-pipeline.txt
           pip install tensorflow   # neural-network candidate
 
       - name: Refresh training split (pick up new hourly data)
