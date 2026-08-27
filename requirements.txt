@@ -14,7 +14,7 @@ shap
 joblib
 python-dateutil
 pyarrow
-confluent-kafka
+setuptools
 
 hopsworks
 hsfs
