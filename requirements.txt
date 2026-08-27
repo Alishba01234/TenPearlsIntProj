@@ -14,7 +14,7 @@ shap
 joblib
 python-dateutil
 pyarrow
-setuptools
+setuptools<81
 
 hopsworks
 hsfs
