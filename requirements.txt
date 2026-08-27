@@ -16,6 +16,6 @@ python-dateutil
 pyarrow
 setuptools<81
 
-hopsworks==5.0.*
-hsfs==5.0.*
-hsml==5.0.*
+# Only declare the main Hopsworks client package.
+# It will automatically install matching hsfs and hsml sub-packages.
+hopsworks==3.7.*
