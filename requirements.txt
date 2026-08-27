@@ -1,12 +1,7 @@
-numpy<2,>=1.26
 pandas
 requests
 hopsworks
-hsfs
-hsml
-great-expectations
 pyarrow
-fastavro>=1.9.7
 confluent-kafka
 setuptools
 wheel
@@ -22,6 +17,9 @@ fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
+hsfs
+hsml
+numpy
 scikit-learn
 xgboost
 shap
