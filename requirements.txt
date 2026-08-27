@@ -16,6 +16,8 @@ python-dateutil
 pyarrow
 setuptools<81
 
-# Only declare the main Hopsworks client package.
-# It will automatically install matching hsfs and hsml sub-packages.
+# Hopsworks Client Platform
 hopsworks==3.7.*
+
+# Required internal dependencies for Hopsworks execution
+nest_asyncio
