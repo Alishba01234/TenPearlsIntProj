@@ -17,5 +17,7 @@ pyarrow
 setuptools<81
 
 # Core Client compatible with your Hopsworks 5.0.3 Backend
-hopsworks==5.0.6
+hopsworks==5.0.4
+# hsfs==3.7.9
+# hsml==3.7.2
 nest_asyncio
