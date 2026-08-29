@@ -2,7 +2,7 @@
 
 An end-to-end, serverless machine learning pipeline that forecasts Karachi's Air Quality Index (AQI) 24, 48, and 72 hours ahead — from live data ingestion through to a public, interactive dashboard.
 
-**🔗 Live demo:** [aqi-karachi-forecasting.streamlit.app](https://aqi-karachi-forecasting.streamlit.app/)
+**Live demo:** [aqi-karachi-forecasting.streamlit.app](https://aqi-karachi-forecasting.streamlit.app/)
 
 Built as part of the **10Pearls Shine Internship Program** — Data Sciences Domain, Cohort 9 (13 July – 4 September 2026) by **Alishba Jawaid**, 7th Semester BS (Artificial Intelligence).
 
@@ -53,10 +53,10 @@ The **Feature Store** is the single source of truth read by both training and re
 
 ## Features
 
-- 🔮 **Forecast tab** — current AQI + 24h/48h/72h predictions with EPA category badges and a trend chart
-- 📊 **EDA & Trends tab** — summary stats, daily trend, hour-of-day pattern, monthly seasonality
-- 🧠 **Model Explainability tab** — local + global SHAP feature attribution per horizon
-- 🚨 **Alerts tab** — automatic warning/severe alerts when a forecast crosses hazardous AQI thresholds
+- **Forecast tab** — current AQI + 24h/48h/72h predictions with EPA category badges and a trend chart
+- **EDA & Trends tab** — summary stats, daily trend, hour-of-day pattern, monthly seasonality
+- **Model Explainability tab** — local + global SHAP feature attribution per horizon
+- **Alerts tab** — automatic warning/severe alerts when a forecast crosses hazardous AQI thresholds
 
 ## Tech Stack
 
@@ -78,9 +78,9 @@ Three candidates (Ridge, Random Forest, XGBoost) are trained independently per h
 
 | Horizon | Model | Test RMSE | Test MAE | Test R² | Baseline R² | Improvement |
 |---|---|---|---|---|---|---|
-| 24h | Ridge | 12.54 | 8.81 | 0.669 | 0.432 | +0.237 |
-| 48h | Ridge | 16.85 | 12.27 | 0.403 | 0.101 | +0.302 |
-| 72h | Ridge | 17.83 | 13.28 | 0.334 | −0.093 | +0.427 |
+| 24h | Ridge | 12.46 | 8.72 | 0.67 | 0.432 | +0.237 |
+| 48h | Ridge | 16.86 | 12.31 | 0.41 | 0.101 | +0.302 |
+| 72h | Ridge | 17.82 | 13.30 | 0.342 | −0.093 | +0.427 |
 
 The model's advantage over naive persistence **widens** as the horizon grows — exactly where a naive forecast is least useful.
 
