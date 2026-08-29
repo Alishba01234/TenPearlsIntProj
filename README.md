@@ -8,23 +8,6 @@ Built as part of the **10Pearls Shine Internship Program** — Data Sciences Dom
 
 ---
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Model Performance](#model-performance)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-- [Environment Variables](#environment-variables)
-- [Automation (CI/CD)](#automation-cicd)
-- [Deployment](#deployment)
-- [Limitations & Roadmap](#limitations--roadmap)
-- [Acknowledgements](#acknowledgements)
-
----
-
 ## Overview
 
 Karachi regularly experiences AQI levels in the "Unhealthy" range and worse. This project treats AQI forecasting as a time-series regression problem and builds a **production-style system** around it — not a one-off notebook — covering:
@@ -35,12 +18,6 @@ Karachi regularly experiences AQI levels in the "Unhealthy" range and worse. Thi
 - Multi-model training and evaluation (Ridge / Random Forest / XGBoost) across 3 forecast horizons
 - A FastAPI backend + Streamlit dashboard with live predictions, EDA, SHAP explainability, and health alerts
 - Free, fully automated deployment on Streamlit Community Cloud
-
-## Architecture
-
-<p align="center">
-  <img src="docs/architecture.png" alt="System architecture diagram" width="850">
-</p>
 
 Two scheduled GitHub Actions jobs keep the system self-sustaining:
 
