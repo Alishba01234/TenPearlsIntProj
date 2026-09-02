@@ -77,6 +77,21 @@ def main():
     print(f"  {len(df):,} rows currently in the feature group")
     print(f"  Max datetime actually read: {df['datetime'].max()}")
     df_for_split = prepare_for_split(df)
+
+    # prepare_for_split() only drops trailing-edge rows lacking full target
+    # history yet (rows too new to have 72h of future data). It does NOT
+    # scan for NaNs elsewhere in the timeline -- e.g. from a missed hourly
+    # run, or a genuine gap in the upstream Open-Meteo data -- so do that
+    # explicitly here rather than assuming the edge drop already caught it.
+    check_cols = ["us_aqi"] + TARGET_COLS
+    na_mask = df_for_split[check_cols].isna().any(axis=1)
+    n_bad = int(na_mask.sum())
+    if n_bad:
+        print(f"  Dropping {n_bad} row(s) with NaN in us_aqi/target columns "
+              f"(not caught by prepare_for_split's edge-only filter):")
+        print(df_for_split.loc[na_mask, ["datetime"]].to_string(index=False))
+        df_for_split = df_for_split[~na_mask].reset_index(drop=True)
+
     bounds = compute_split_boundaries(df_for_split)
     print(f"\nReplacing the training-dataset split under the existing Feature "
           f"View (old version(s) deleted first, new one should land at "
