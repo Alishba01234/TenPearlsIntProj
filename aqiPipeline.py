@@ -634,7 +634,7 @@ def fetch_split_from_hopsworks(fv, training_dataset_version: int = 1):
           f"train.csv ({len(train_df):,} rows), test.csv ({len(test_df):,} rows)")
     return train_df, test_df
 
-def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, version: int = 1):
+def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, version: int = 1, keep_last_splits: int = 7):
     fg = fs.get_feature_group(f"aqi_features_{city}", version=version)
     query = fg.select(df.columns.tolist())
     fv = fs.get_or_create_feature_view(
@@ -645,22 +645,25 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
         description=f"3-day-ahead AQI forecasting feature view for {city}",
     )
 
+    # Retention: keep the most recent `keep_last_splits` training-dataset
+    # versions instead of deleting everything and always landing back at
+    # v1. The old delete-everything-then-recreate-as-v1 approach meant
+    # train_models.py's read, running seconds later, could race Hopsworks'
+    # own read-path caching for that reused version number and see a
+    # stale/partial result -- traced back as the likely root cause behind
+    # an intermittent "Input contains NaN" crash. Always creating a NEW
+    # version and keeping recent history avoids that race entirely, at
+    # the cost of bounded storage for `keep_last_splits` old splits (never
+    # more than that, oldest deleted first).
     try:
-        fv.delete_all_training_datasets()
-        print("  Deleted all existing training dataset(s) via delete_all_training_datasets().")
-    except AttributeError:
-        try:
-            existing_tds = fv.get_training_datasets()
-            for td in existing_tds:
-                print(f"  Deleting existing training dataset v{td.version} before creating a new split...")
-                fv.delete_training_dataset(training_dataset_version=td.version)
-        except Exception as e:
-            print(f"  Could not enumerate/delete existing training datasets ({e}) -- "
-                  f"proceeding to create the new split anyway. If old versions "
-                  f"keep accumulating, check the Hopsworks UI (Feature View -> "
-                  f"Training Datasets) and this hsfs version's delete API.")
+        existing_tds = sorted(fv.get_training_datasets(), key=lambda td: td.version)
+        n_to_keep = max(keep_last_splits - 1, 0)  # -1: this run is about to add one more
+        to_delete = existing_tds[:-n_to_keep] if n_to_keep else existing_tds
+        for td in to_delete:
+            print(f"  Deleting old training dataset v{td.version} (keeping most recent {n_to_keep})...")
+            fv.delete_training_dataset(training_dataset_version=td.version)
     except Exception as e:
-        print(f"  Could not delete existing training datasets ({e}) -- "
+        print(f"  Could not enumerate/delete old training datasets ({e}) -- "
               f"proceeding to create the new split anyway. If old versions "
               f"keep accumulating, check the Hopsworks UI (Feature View -> "
               f"Training Datasets) and this hsfs version's delete API.")
@@ -675,7 +678,8 @@ def create_feature_view_split(fs, df: pd.DataFrame, city: str, bounds: dict, ver
         data_format="csv",
         statistics_config=False,
     )
-    print(f"Feature View 'aqi_fv_{city}' v{version} created with the split registered.")
+    print(f"Feature View 'aqi_fv_{city}' v{version} created with a new training-dataset split registered "
+          f"(keeping the last {keep_last_splits} split version(s)).")
     return fv
 
 def main():
