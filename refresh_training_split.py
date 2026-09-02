@@ -8,41 +8,60 @@ appending new rows to the underlying feature GROUP, but that snapshot
 never automatically updates. Without this refresh step, "daily retraining"
 would silently retrain on the exact same frozen data every day and never
 actually see the new hourly rows.
+
 This script re-reads the CURRENT state of the feature group, recomputes
 split boundaries (train = everything but the most recent 12 months, test =
-the most recent 12 months, same logic as aqiPipeline.py), and REPLACES the
-existing training-dataset split under the Feature View: create_feature_view_split()
-deletes whatever training-dataset version(s) already exist before creating
-the new one, so this stays a single replaced-in-place version 1 rather
-than an ever-growing v1, v2, v3, ... pile in Hopsworks storage.
-Hopsworks assigns the training-dataset version number itself, and (based
-on testing) reuses the freed number when nothing else remains -- but
-that's not a documented API guarantee, so this script still reads back
-whatever version actually got assigned and writes it to
-latest_td_version.txt, and prints a clear warning if it's ever not 1, so
+the most recent 12 months, same logic as aqiPipeline.py), and registers a
+NEW training-dataset version under the Feature View via
+create_feature_view_split(), which keeps the most recent `keep_last_splits`
+versions (default 7) and deletes older ones -- see aqiPipeline.py for why
+this replaced the earlier "always delete everything and land back at v1"
+approach: reusing version 1 let train_models.py's read, running seconds
+later, race Hopsworks' own read-path caching for that reused version
+number and occasionally see a stale/partial result (this was traced back
+as the likely root cause of an intermittent "Input contains NaN" crash in
+train_models.py). Always creating a new version sidesteps that race
+entirely.
+
+Hopsworks assigns the training-dataset version number itself, so this
+script reads back whatever version actually got created (always the max
+version on the Feature View) and writes it to latest_td_version.txt, so
 train_models.py --td-version always points at something that genuinely
-exists even if that assumption is ever wrong on some hsfs version.
+exists. Before trusting that version number, it also does a best-effort
+read-back verification (a few retries with backoff) to catch the case
+where the version was *just* created and the read path hasn't caught up
+yet -- belt-and-suspenders on top of the versioning fix above, not a
+replacement for it.
+
 Read-only with respect to aqiPipeline.py / train_models.py -- only imports
 from aqiPipeline.py.
+
 Usage:
     python refresh_training_split.py --city Karachi
     python train_models.py --city karachi --td-version $(cat latest_td_version.txt)
 """
 import argparse
+import time
+
 from aqiPipeline import (  # noqa: F401 -- read-only reuse
     get_hopsworks_feature_store, prepare_for_split, compute_split_boundaries,
     create_feature_view_split, TARGET_COLS,
 )
-from hopsworks_read_utils import robust_read
+from hopsworks_read_utils import robust_read, robust_train_test_split
+
 VERSION_FILE = "latest_td_version.txt"
+KEEP_LAST_SPLITS = 7  # must match (or be <=) aqiPipeline.py's create_feature_view_split default
+VERIFY_ATTEMPTS = 3
+VERIFY_ROW_TOLERANCE = 5  # small slack for edge-row filtering differences between runs
+
 
 def get_new_training_dataset_version(fv, fallback_hint: int = None):
     """Best-effort lookup of the version number that create_train_test_split()
     just created. The exact hsfs API for reading this back can differ
     slightly across hopsworks/hsfs versions, so this tries the direct
-    lookup first and falls back to fallback_hint (the expected version)
-    if that lookup fails -- verify against the Hopsworks UI (Feature View
-    -> Training Datasets tab) if this ever looks wrong."""
+    lookup first and falls back to fallback_hint if that lookup fails --
+    verify against the Hopsworks UI (Feature View -> Training Datasets tab)
+    if this ever looks wrong."""
     if fv is not None:
         try:
             tds = fv.get_training_datasets()
@@ -53,7 +72,7 @@ def get_new_training_dataset_version(fv, fallback_hint: int = None):
             print(f"  Could not list training datasets via get_training_datasets() ({e})")
 
     if fallback_hint is not None:
-        print(f"  Falling back to expected version: v{fallback_hint}")
+        print(f"  Falling back to hint: v{fallback_hint}")
         return fallback_hint
 
     print("  WARNING: could not determine the new training dataset version. "
@@ -61,7 +80,32 @@ def get_new_training_dataset_version(fv, fallback_hint: int = None):
           "--td-version manually to train_models.py for this run.")
     return None
 
-EXPECTED_VERSION = 1  # create_feature_view_split() deletes old training-dataset versions before creating a new one
+
+def verify_split_readable(fv, version: int, expected_test_rows: int) -> bool:
+    """Reads the newly created split back (with retries) and checks the
+    test-row count roughly matches what we just asked Hopsworks to create,
+    before letting train_models.py proceed against it. This does not
+    replace the versioning fix in create_feature_view_split() -- it's a
+    second line of defense in case a genuinely new version is still briefly
+    stale on the read path right after creation."""
+    for attempt in range(1, VERIFY_ATTEMPTS + 1):
+        try:
+            _, X_test_check, _, _ = robust_train_test_split(
+                fv, training_dataset_version=version, label="refresh_verify"
+            )
+            n = len(X_test_check)
+            if abs(n - expected_test_rows) <= VERIFY_ROW_TOLERANCE:
+                print(f"  Verified: read back {n} test rows for v{version} "
+                      f"(expected ~{expected_test_rows}). OK.")
+                return True
+            print(f"  Attempt {attempt}/{VERIFY_ATTEMPTS}: read back {n} test rows for v{version}, "
+                  f"expected ~{expected_test_rows} -- looks stale, retrying...")
+        except Exception as e:
+            print(f"  Attempt {attempt}/{VERIFY_ATTEMPTS}: verification read failed ({e}), retrying...")
+        if attempt < VERIFY_ATTEMPTS:
+            time.sleep(20 * attempt)
+    return False
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -93,11 +137,15 @@ def main():
         df_for_split = df_for_split[~na_mask].reset_index(drop=True)
 
     bounds = compute_split_boundaries(df_for_split)
-    print(f"\nReplacing the training-dataset split under the existing Feature "
-          f"View (old version(s) deleted first, new one should land at "
-          f"v{EXPECTED_VERSION})...")
+    expected_test_rows = int((df_for_split["datetime"] >= bounds["test_start"]).sum())
+    print(f"\nCreating a new training-dataset split under the existing Feature "
+          f"View (older versions are kept, up to the last {KEEP_LAST_SPLITS}, "
+          f"not all deleted -- see aqiPipeline.py for why this replaced the "
+          f"old always-v1 approach)...")
     try:
-        fv = create_feature_view_split(fs, df_for_split, city_key, bounds, version=args.fv_version)
+        fv = create_feature_view_split(
+            fs, df_for_split, city_key, bounds, version=args.fv_version, keep_last_splits=KEEP_LAST_SPLITS
+        )
     except Exception as e:
         # The split's data can finish writing successfully even when a
         # later step (e.g. Hopsworks' post-write statistics computation)
@@ -117,26 +165,27 @@ def main():
                   f"hiccup after a successful write.")
             fv = None
 
-    fallback_hint = EXPECTED_VERSION if fv is not None else None
-    new_version = get_new_training_dataset_version(fv, fallback_hint=fallback_hint)
-    if new_version is not None:
-        if new_version != EXPECTED_VERSION:
-            print(f"\n  WARNING: new training dataset landed at v{new_version}, not "
-                  f"v{EXPECTED_VERSION} as expected. create_feature_view_split() is "
-                  f"supposed to delete old training-dataset versions before creating "
-                  f"a new one so this always stays v{EXPECTED_VERSION} -- either that "
-                  f"deletion silently failed this run, or this Hopsworks/hsfs version "
-                  f"doesn't reuse a freed version number the way this was designed "
-                  f"around. Check the Hopsworks UI (Feature View -> Training Datasets) "
-                  f"for leftover old versions. train_models.py will still be pointed "
-                  f"at whatever version actually exists (v{new_version}), so training "
-                  f"itself isn't broken -- this is a cleanup/versioning issue, not a "
-                  f"data-correctness one.")
-        with open(VERSION_FILE, "w") as f:
-            f.write(str(new_version))
-        print(f"\nWrote {VERSION_FILE} = {new_version}")
-    else:
+    new_version = get_new_training_dataset_version(fv, fallback_hint=None)
+    if new_version is None:
         print(f"\nCould NOT write {VERSION_FILE} -- see warning above.")
+        return
+
+    if fv is not None:
+        verified = verify_split_readable(fv, new_version, expected_test_rows)
+        if not verified:
+            raise RuntimeError(
+                f"Could not verify the new split (v{new_version}) is readable with the "
+                f"expected row count (~{expected_test_rows} test rows) after "
+                f"{VERIFY_ATTEMPTS} attempts -- refusing to point train_models.py at what "
+                f"may be stale/partial data. Check the Hopsworks UI (Feature View -> "
+                f"Training Datasets) for v{new_version} before re-running."
+            )
+    else:
+        print("  Skipping read-back verification -- Feature View handle unavailable.")
+
+    with open(VERSION_FILE, "w") as f:
+        f.write(str(new_version))
+    print(f"\nWrote {VERSION_FILE} = {new_version}")
 
 
 if __name__ == "__main__":
