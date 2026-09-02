@@ -86,6 +86,28 @@ def load_splits(fs, city: str, fv_version: int = 1, td_version: int = 1):
         fv, training_dataset_version=td_version, label="load_splits"
     )
 
+    # Defensive NaN guard: refresh_training_split.py is expected to have already
+    # dropped rows lacking full target history, but don't assume that blindly --
+    # a NaN slipping through here crashes deep inside sklearn with a confusing
+    # traceback instead of a clear message about the actual data problem.
+    for name, X, y in (("train", X_train, y_train), ("test", X_test, y_test)):
+        na = pd.concat([X[["us_aqi"]], y[TARGET_COLS]], axis=1).isna().sum()
+        na = na[na > 0]
+        if len(na):
+            print(f"  WARNING: {name} split has NaNs before cleaning:\n{na.to_string()}")
+
+    check_cols = ["us_aqi"] + TARGET_COLS
+    n_train_before, n_test_before = len(X_train), len(X_test)
+    train_ok = ~pd.concat([X_train[["us_aqi"]], y_train[TARGET_COLS]], axis=1).isna().any(axis=1)
+    test_ok = ~pd.concat([X_test[["us_aqi"]], y_test[TARGET_COLS]], axis=1).isna().any(axis=1)
+    X_train, y_train = X_train[train_ok].reset_index(drop=True), y_train[train_ok].reset_index(drop=True)
+    X_test, y_test = X_test[test_ok].reset_index(drop=True), y_test[test_ok].reset_index(drop=True)
+    if n_train_before != len(X_train) or n_test_before != len(X_test):
+        print(f"  Dropped {n_train_before - len(X_train)} train / {n_test_before - len(X_test)} test "
+              f"row(s) with NaN in 'us_aqi' or a target column. This should be rare -- if the count "
+              f"is more than a handful, the gap is likely upstream in refresh_training_split.py's "
+              f"row-filtering, not here.")
+
     def _sort_by_time(X, y, split_name: str):
         order = X["datetime"].argsort().to_numpy()
         X_sorted = X.iloc[order].reset_index(drop=True)
