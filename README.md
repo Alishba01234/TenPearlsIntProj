@@ -19,6 +19,12 @@ Karachi regularly experiences AQI levels in the "Unhealthy" range and worse. Thi
 - A FastAPI backend + Streamlit dashboard with live predictions, EDA, SHAP explainability, and health alerts
 - Free, fully automated deployment on Streamlit Community Cloud
 
+## Architecture
+
+<p align="center">
+  <img src="docs/architecture.png" alt="System architecture diagram" width="850">
+</p>
+
 Two scheduled GitHub Actions jobs keep the system self-sustaining:
 
 | Job | Script(s) | Schedule | Purpose |
@@ -55,9 +61,11 @@ Three candidates (Ridge, Random Forest, XGBoost) are trained independently per h
 
 | Horizon | Model | Test RMSE | Test MAE | Test R² | Baseline R² | Improvement |
 |---|---|---|---|---|---|---|
-| 24h | Ridge | 12.46 | 8.72 | 0.67 | 0.432 | +0.237 |
-| 48h | Ridge | 16.86 | 12.31 | 0.41 | 0.101 | +0.302 |
-| 72h | Ridge | 17.82 | 13.30 | 0.342 | −0.093 | +0.427 |
+| 24h | Ridge | 12.46 | 8.72 | 0.67 | 0.432 | +0.238 |
+| 48h | Ridge | 16.86 | 12.31 | 0.41 | 0.101 | +0.309 |
+| 72h | Ridge | 17.82 | 13.30 | 0.342 | −0.093 | +0.435 |
+
+*Updated automatically by the daily retraining workflow; last refreshed from a live run of `train_models.py`.*
 
 The model's advantage over naive persistence **widens** as the horizon grows — exactly where a naive forecast is least useful.
 
@@ -68,7 +76,7 @@ The model's advantage over naive persistence **widens** as the horizon grows —
 ├── aqiPipeline.py              # Full historical backfill + feature engineering + Feature Store upload
 ├── hourly_feature_update.py    # Incremental hourly feature refresh (reuses aqiPipeline.py)
 ├── hopsworks_read_utils.py     # Resilient Feature Store reads (Hive-path fallback + retry/backoff)
-├── refresh_training_split.py   # Daily: refreshes the Feature View train/test split
+├── refresh_training_split.py   # Daily: creates a new train/test split version (keeps last 7), verifies it's readable
 ├── train_models.py             # Trains, evaluates, and registers models (Ridge/RF/XGBoost × 3 horizons)
 ├── dashboard_config.py         # Shared config constants (city, horizons, AQI breakpoints, API URL)
 ├── model_service.py            # Hopsworks connection caching + real-time prediction logic
@@ -145,6 +153,19 @@ Two scheduled GitHub Actions workflows keep the system current without manual in
 
 Both install dependencies from `requirements-pipeline.txt`.
 
+### Training-split versioning & data-quality guards
+
+`refresh_training_split.py` creates a **new** Hopsworks training-dataset version on every run rather than deleting and reusing version 1 — this avoids a read-path race that could otherwise let `train_models.py` see a stale/partial split seconds after creation. Older versions are pruned automatically, keeping at most the **last 7**. Before handing off to `train_models.py`, it also does a best-effort read-back of the new split (with retries) to confirm the row count looks right, and drops any row with a NaN in `us_aqi` or a target column that the edge-trim step didn't already catch. `train_models.py` has its own defensive NaN-guard on load as a second line of defense.
+
+## Known Issues & Fixes
+
+A running log of non-obvious production issues hit after initial deployment, kept here so the fix (and the reasoning behind it) doesn't get lost:
+
+| Issue | Root cause | Fix |
+|---|---|---|
+| Intermittent `ValueError: Input contains NaN` crashing the daily `train_models.py` run | A gap in `us_aqi`/target columns mid-timeline (e.g. a missed hourly run) that the edge-only row trim in `prepare_for_split()` doesn't catch | Explicit NaN scan + drop added in both `refresh_training_split.py` and `train_models.py` |
+| Same crash recurring even after the above, with `train_models.py` reading a row count that didn't match what `refresh_training_split.py` had just written | Training-dataset splits were deleted and recreated under the same reused version (v1) every run; `train_models.py`'s read, seconds later, could race Hopsworks' read-path caching for that version number and see a stale/partial result | `create_feature_view_split()` now always creates a **new** version instead of reusing v1 (keeping the last 7, pruning older), and `refresh_training_split.py` does a read-back verification with retries before trusting the new version |
+
 ## Deployment
 
 The dashboard is deployed free on **Streamlit Community Cloud**, auto-redeploying on every push. Because the app is actually two services (FastAPI backend + Streamlit frontend) running on a platform that gives one process per app, `streamlit_app.py` spawns `uvicorn api_backend:app` as a background subprocess on first load. Streamlit Cloud reads dependencies from the slim `requirements.txt` at the repo root — the full pipeline dependency list lives separately in `requirements-pipeline.txt` so GitHub Actions and the live deployment never conflict.
@@ -165,5 +186,5 @@ The dashboard is deployed free on **Streamlit Community Cloud**, auto-redeployin
 
 ---
 
-**Author:** Alishba Jawaid — 7th Semester, BS (Artificial Intelligence)
+**Author:** Alishba Jawaid — BS (Artificial Intelligence)
 **Live app:** https://aqi-karachi-forecasting.streamlit.app/
