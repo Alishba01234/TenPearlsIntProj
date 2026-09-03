@@ -21,10 +21,6 @@ Karachi regularly experiences AQI levels in the "Unhealthy" range and worse. Thi
 
 ## Architecture
 
-<p align="center">
-  <img src="docs/architecture.png" alt="System architecture diagram" width="850">
-</p>
-
 Two scheduled GitHub Actions jobs keep the system self-sustaining:
 
 | Job | Script(s) | Schedule | Purpose |
