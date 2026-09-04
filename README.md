@@ -4,6 +4,8 @@ An end-to-end, serverless machine learning pipeline that forecasts Karachi's Air
 
 **Live demo:** [aqi-karachi-forecasting.streamlit.app](https://aqi-karachi-forecasting.streamlit.app/)
 
+**Recorded Video:** [video-link](https://drive.google.com/file/d/1A7GBuONdzeBiDLkRnpFdqvQEf-zkxi_U/view?usp=sharing)
+
 Built as part of the **10Pearls Shine Internship Program** — Data Sciences Domain, Cohort 9 (13 July – 4 September 2026) by **Alishba Jawaid**, 7th Semester BS (Artificial Intelligence).
 
 ---
@@ -184,3 +186,4 @@ The dashboard is deployed free on **Streamlit Community Cloud**, auto-redeployin
 
 **Author:** Alishba Jawaid — BS (Artificial Intelligence)
 **Live app:** https://aqi-karachi-forecasting.streamlit.app/
+**Recorded Video:** https://drive.google.com/file/d/1A7GBuONdzeBiDLkRnpFdqvQEf-zkxi_U/view?usp=sharing
